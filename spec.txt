@@ -1,0 +1,100 @@
+Design Spec: tpt-query (Layer 3)
+1. Mission & Scope
+Mission: To provide a unified, pure-Rust, embedded declarative query engine for structured entity graphs. It enables complex data retrieval (filtering, projection, graph traversal, and aggregation) directly against in-memory tpt-model collections or tpt-uir trees, without requiring a heavy external database.
+Scope:
+In Scope: A lightweight, Datalog-inspired query language (or typed Rust builder API), pattern matching, graph traversal (joins), filtering, projection, basic aggregation (count, sum, min, max), and optional lightweight indexing (hash indexes, spatial R-trees).
+Out of Scope: Full ANSI SQL parsing, distributed query planning across multiple nodes, external database drivers (ODBC/JDBC), and complex transactional locking (handled by the application layer or tpt-replicate).
+2. Core Constraints & Architecture
+Zero C-FFI: 100% Pure Rust. No linking to SQLite or DuckDB.
+no_std + alloc: The core execution engine must run in no_std environments. This allows querying data directly on embedded devices (tpt-l-riscv) or in WASM (tpt-pwa) without a database server.
+Zero-Copy Execution: Where possible, the query engine should return references or views into the underlying tpt-uir data, avoiding unnecessary allocations during traversal.
+Deterministic: Query results must be returned in a deterministic order (unless explicitly ordered otherwise), ensuring reproducible outputs for testing and auditing.
+The Dependency Map
+Data Source: tpt-model & tpt-uir (The engine queries these structures directly).
+Math: tpt-math (For numeric comparisons, spatial queries like bounding box intersections in CAD).
+Testing: tpt-testkit (For query correctness, index validation, and performance benchmarking).
+3. Core Modules & API Design
+Module A: tpt_query::ast (The Query Representation)
+The internal representation of a query. It can be built programmatically via a typed Rust API or parsed from a lightweight string format (e.g., a simplified Datalog or JSON-based AST for cross-language interop).
+Query Nodes: Select, Where (Filter), Traverse (Join/Graph walk), Project (Map), Aggregate.
+Key Struct:
+pub struct Query {
+    pub source: EntityTypeId, // e.g., "CadPart"
+    pub filters: Vec<Condition>,
+    pub traversals: Vec<Traversal>,
+    pub projections: Vec<Projection>,
+    pub limit: Option<usize>,
+    pub order_by: Option<OrderBy>,
+}
+
+pub enum Condition {
+    Eq { field: FieldPath, value: UirNode },
+    Gt { field: FieldPath, value: UirNode },
+    Contains { field: FieldPath, value: UirNode },
+    And(Vec<Condition>),
+    Or(Vec<Condition>),
+}
+Module B: tpt_query::engine (The Execution Engine)
+The heart of the crate. It takes a Query AST and executes it against a collection of entities.
+Streaming Execution: Instead of materializing the entire result set in memory, the engine yields results as an Iterator. This is critical for querying massive documents (e.g., a 10,000-page PDF or a 1M-vertex CAD model) without OOM crashes.
+Predicate Pushdown: The engine optimizes the query by applying Where filters as early as possible during traversal to prune the search space.
+Key Trait:
+pub trait Queryable {
+    // Returns an iterator of matching UirNode references
+    fn execute<'a>(&'a self, query: &Query) -> Result<QueryResultIterator<'a>, QueryError>;
+}
+Module C: tpt_query::traverse (Graph Navigation)
+Entities in tpt-model are rarely flat; they form graphs (e.g., a Document contains Pages, which contain Paragraphs, which contain TextRuns).
+Edge Navigation: Allows queries to follow relationships. E.g., "Find all TextRun entities where the parent Paragraph has style == Bold".
+Recursive Traversal: Supports depth-first or breadth-first traversal up to a specified depth, with cycle detection to prevent infinite loops in cyclic graphs.
+Module D: tpt_query::index (Optional Acceleration)
+While the engine can do full collection scans, indexes are required for performance on large datasets.
+Hash Index: O(1) lookups for exact matches (e.g., EntityId or unique string keys).
+B-Tree Index: O(log N) lookups for range queries (e.g., timestamp > X, price < Y).
+Spatial Index (R-Tree): Powered by tpt-math, used for 2D/3D bounding box queries. Crucial for tpt-vertex (e.g., "Find all CAD parts intersecting this viewport rectangle").
+Index Maintenance: Indexes are updated incrementally when tpt-model entities are inserted, updated, or deleted.
+Module E: tpt_query::aggregate (Reduction)
+Performs computations over the matched result set.
+Supported Aggregations: Count, Sum, Min, Max, Avg, GroupBy.
+Streaming Aggregation: Computes aggregates on the fly as the iterator yields results, requiring only O(1) or O(K) memory (where K is the number of groups), not O(N) memory.
+4. The Processing Pipeline
+How a user searches for specific data in a massive CAD assembly:
+Query Formulation: The application builds a query: "Find all CadPart entities where material == 'Titanium' AND bounding_box intersects [0, 0, 0, 10, 10, 10]".
+Planning: The tpt_query::engine analyzes the query. It sees a spatial condition and a material condition.
+Index Selection: It checks available indexes. It finds a Spatial R-Tree index on bounding_box and a Hash index on material. It chooses the most selective index (e.g., the R-Tree) to fetch a candidate set of EntityIds.
+Execution (Streaming): The engine iterates over the candidate EntityIds, fetching the full tpt-uir node for each.
+Filtering: It applies the remaining material == 'Titanium' filter in memory (predicate pushdown).
+Projection: It extracts only the requested fields (e.g., id and name) to minimize payload size.
+Output: The results are yielded to the application as a stream, which can be displayed in the UI or serialized via tpt-uir.
+5. Integration with the TPT Ecosystem
+tpt-vertex (CAD): Uses the Spatial R-Tree index to perform fast viewport culling ("What parts are visible on screen?") and graph traversal ("Select this face, then find all connected edges and vertices").
+tpt-doc (Documents): Uses graph traversal to find specific structures ("Find all Table entities in this document that have more than 5 rows, and return their ids").
+tpt-lattice (Spreadsheets): Uses hash indexes to quickly resolve cell references (e.g., evaluating =SUM(A1:A100) requires querying all entities in that range).
+tpt-model & tpt-uir: tpt-query is essentially a read-only view layer over these crates. It relies on tpt-uir's efficient memory layout to make field extraction fast.
+tpt-math: Provides the geometric primitives (AABB, Ray, Sphere) used by the spatial index and query conditions.
+6. Testing & Quality Strategy
+Correctness via Golden Files: We define a complex entity graph (e.g., a mock CAD assembly). We run a suite of predefined queries and save the JSON results as golden files. Any change in query logic is validated against these files.
+Index Invariant Testing: Using tpt-testkit::property, we generate random sequences of inserts, updates, and deletes. After each sequence, we run a full collection scan and compare the results to the indexed query results. They must match exactly.
+Memory Limit Testing: We query a synthetic dataset of 1,000,000 entities with a limit: 10. We assert that the peak memory usage remains under a strict threshold (e.g., < 5MB), proving the streaming execution works and doesn't materialize the whole set.
+Benchmarking: Using tpt-testkit::bench, we measure query latency with and without indexes, ensuring the R-Tree and Hash indexes provide the expected O(log N) or O(1) speedups.
+7. Roadmap & Milestones
+Phase 1: AST & Basic Engine (Weeks 1-3)
+Define the Query AST and the typed Rust builder API.
+Implement the basic streaming execution engine with full collection scans and simple Eq/And/Or filtering.
+Milestone: Can query flat collections of tpt-model entities.
+Phase 2: Graph Traversal & Projection (Weeks 4-6)
+Implement the Traverse module for following entity relationships (joins).
+Implement Project to return partial entity data (reducing payload size).
+Milestone: Can query nested, hierarchical document structures.
+Phase 3: Indexing (Weeks 7-9)
+Implement Hash and B-Tree indexes.
+Implement the Spatial R-Tree index using tpt-math.
+Integrate index selection into the query planner.
+Milestone: Large dataset queries are fast (sub-millisecond for indexed lookups).
+Phase 4: Aggregation & Polish (Weeks 10-12)
+Implement streaming GroupBy and aggregations (Count, Sum, etc.).
+Finalize the lightweight string parser (for cross-language FFI via WASM if needed).
+Publish v1.0.0.
+Architect's Note
+The most dangerous trap in embedded query engines is accidental O(N²) complexity. A naive implementation of graph traversal (e.g., "find all children of all children") can easily devolve into a full graph scan for every node, grinding the application to a halt on large documents.
+To prevent this, tpt-query enforces a strict rule: All traversals must be backed by explicit relationship maps or indexes. The engine will never do a blind, full-collection scan to find "children" of a node. Instead, tpt-model entities must expose their relationships in a way that tpt-query can resolve in O(1) or O(log N) time. This forces good data modeling at the tpt-model layer and guarantees predictable performance at the query layer.
