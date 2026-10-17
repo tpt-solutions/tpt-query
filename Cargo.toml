@@ -1,0 +1,45 @@
+[package]
+name = "tpt-query"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+description = "Embedded, pure-Rust, no_std declarative query engine for structured entity graphs."
+readme = "README.md"
+keywords = ["query", "no_std", "graph", "index", "embedded"]
+categories = ["no-std", "database-implementations"]
+
+[features]
+default = []
+# Enables std::error::Error for QueryError.
+std = []
+# R-tree spatial index for Condition::Intersects.
+spatial = []
+# serde derives on the query AST.
+serde = ["dep:serde"]
+# JSON string format for the query AST (implies `serde`).
+json = ["serde", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
+serde_json = { version = "1", default-features = false, features = ["alloc"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+# Native-only test tooling: golden fixtures, property strategies, and benchmarks.
+# tpt-testkit is pinned to a commit because it has no release tags yet.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tpt-testkit = { git = "https://github.com/tpt-solutions/tpt-testkit", rev = "e77a90198eed4235224a49e3226fe2c1b9f2247b", features = ["golden", "property", "bench"] }
+proptest = "1"
+criterion = "0.7"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+# proptest pulls in getrandom, which needs its JS backend on wasm32.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[[bench]]
+name = "index"
+harness = false

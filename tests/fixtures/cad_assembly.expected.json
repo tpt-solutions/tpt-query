@@ -1,0 +1,94 @@
+[
+  {
+    "query": "titanium_parts",
+    "rows": [
+      {
+        "id": 2,
+        "projected": [
+          "bracket",
+          12.5
+        ]
+      }
+    ]
+  },
+  {
+    "query": "heavy_parts_desc",
+    "rows": [
+      {
+        "id": 2,
+        "projected": [
+          "bracket"
+        ]
+      },
+      {
+        "id": 4,
+        "projected": [
+          "plate"
+        ]
+      }
+    ]
+  },
+  {
+    "query": "bracket_faces",
+    "rows": [
+      {
+        "id": 10,
+        "projected": [
+          6.0
+        ]
+      },
+      {
+        "id": 11,
+        "projected": [
+          2.5
+        ]
+      },
+      {
+        "id": 12,
+        "projected": [
+          9.25
+        ]
+      }
+    ]
+  },
+  {
+    "query": "large_faces_under_assembly",
+    "rows": [
+      {
+        "id": 10,
+        "projected": [
+          6.0
+        ]
+      },
+      {
+        "id": 12,
+        "projected": [
+          9.25
+        ]
+      },
+      {
+        "id": 14,
+        "projected": [
+          5.75
+        ]
+      }
+    ]
+  },
+  {
+    "query": "steel_parts_with_small_face",
+    "rows": [
+      {
+        "id": 3,
+        "projected": [
+          "bolt"
+        ]
+      },
+      {
+        "id": 5,
+        "projected": [
+          "washer"
+        ]
+      }
+    ]
+  }
+]

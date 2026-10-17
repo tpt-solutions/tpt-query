@@ -1,0 +1,4 @@
+# Runs wasm32 tests under Node via wasm-bindgen-test-runner
+# (install: cargo install wasm-bindgen-cli --version <matching the lockfile>).
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
