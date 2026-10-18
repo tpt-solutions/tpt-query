@@ -145,3 +145,40 @@ fn live_query_reports_added_and_removed_ids() {
         vec![EntityId(2), EntityId(11)]
     );
 }
+
+#[test]
+fn analyze_timed_reports_each_phase_from_the_caller_clock() {
+    use std::cell::Cell;
+    let s = parts();
+    let q = Query::new(PART).filter(Condition::eq_to("material", "rare"));
+    // Each reading advances the clock by 10, so each phase takes 10 ns.
+    let ticks = Cell::new(0u64);
+    let clock = || {
+        ticks.set(ticks.get() + 10);
+        ticks.get()
+    };
+    let a = s.analyze_timed(&q, &clock).unwrap();
+    assert_eq!(a.plan_nanos, Some(10));
+    assert_eq!(a.run_nanos, Some(10));
+    assert_eq!(a.returned, 2);
+
+    // Without a clock, the timings stay unset.
+    let plain = s.analyze(&q).unwrap();
+    assert_eq!((plain.plan_nanos, plain.run_nanos), (None, None));
+}
+
+#[test]
+fn unindexed_lists_only_conditions_no_index_answers() {
+    let mut s = parts();
+    s.create_index("by_mass", PART, "mass", IndexKind::BTree)
+        .unwrap();
+    // `mass` has an index, so it is not unindexed even though `material` is chosen.
+    let q = Query::new(PART).filter(Condition::all(vec![
+        Condition::eq_to("material", "rare"),
+        Condition::gt("mass", Value::Int(1)),
+        Condition::eq_to("kind", "fillet"),
+    ]));
+    let plan = s.explain(&q).unwrap();
+    assert_eq!(plan.residual_filters, 2);
+    assert_eq!(plan.unindexed, vec!["eq on `kind`".to_string()]);
+}

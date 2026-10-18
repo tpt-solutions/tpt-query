@@ -330,6 +330,27 @@ impl Index for RTreeIndex {
                     ids: Box::new(out.into_iter()),
                 })
             }
+            Condition::Ray {
+                field,
+                origin,
+                direction,
+                within,
+            } if field == &self.field => {
+                // The ray search is exact per box, so its hits are the answer.
+                let mut ids: Vec<EntityId> = self
+                    .tree
+                    .ray(*origin, *direction, *within)
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                Some(crate::source::IndexHit {
+                    index: self.name.clone(),
+                    len: ids.len(),
+                    ids: Box::new(ids.into_iter()),
+                })
+            }
             _ => None,
         }
     }
@@ -339,45 +360,12 @@ impl Index for RTreeIndex {
 /// first enters `bbox`. `None` if it misses the box or enters after `max_t`. A ray that
 /// starts inside the box enters at `0`.
 pub fn ray_enter(bbox: &Aabb, origin: [f64; 3], dir: [f64; 3], max_t: f64) -> Option<f64> {
-    let (mut t0, mut t1) = (0.0f64, max_t);
-    for i in 0..3 {
-        if dir[i] == 0.0 {
-            if origin[i] < bbox.min[i] || origin[i] > bbox.max[i] {
-                return None;
-            }
-        } else {
-            let inv = 1.0 / dir[i];
-            let (mut ta, mut tb) = (
-                (bbox.min[i] - origin[i]) * inv,
-                (bbox.max[i] - origin[i]) * inv,
-            );
-            if ta > tb {
-                core::mem::swap(&mut ta, &mut tb);
-            }
-            t0 = t0.max(ta);
-            t1 = t1.min(tb);
-            if t0 > t1 {
-                return None;
-            }
-        }
-    }
-    Some(t0)
+    bbox.ray_enter(origin, dir, max_t)
 }
 
 /// Squared distance from `p` to the nearest point of `bbox` (zero inside it).
 fn dist2(bbox: &Aabb, p: &[f64; 3]) -> f64 {
-    (0..3)
-        .map(|i| {
-            let d = if p[i] < bbox.min[i] {
-                bbox.min[i] - p[i]
-            } else if p[i] > bbox.max[i] {
-                p[i] - bbox.max[i]
-            } else {
-                0.0
-            };
-            d * d
-        })
-        .sum()
+    bbox.distance_sq(p)
 }
 
 impl RTree {

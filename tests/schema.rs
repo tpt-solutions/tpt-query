@@ -105,6 +105,12 @@ fn every_condition_variant_has_a_schema_branch() {
             field: "f".into(),
             point: [0.0; 3],
         },
+        Condition::Ray {
+            field: "f".into(),
+            origin: [0.0; 3],
+            direction: [1.0, 0.0, 0.0],
+            within: 5.0,
+        },
         Condition::related(Edge::Parent, None, Condition::OfType(EntityTypeId(1))),
         Condition::In {
             field: field.clone(),

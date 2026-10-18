@@ -4,7 +4,14 @@
 //! optional sort -> projection -> limit. Scans and traversals are lazy, so a
 //! `limit` stops work early.
 
-use alloc::{boxed::Box, collections::BinaryHeap, rc::Rc, string::String, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BinaryHeap},
+    rc::Rc,
+    string::String,
+    vec,
+    vec::Vec,
+};
 use core::{cell::Cell, cmp::Ordering, fmt};
 
 use crate::{
@@ -54,20 +61,39 @@ impl std::error::Error for QueryError {}
 pub struct Row<'a> {
     /// Id of the row's entity.
     pub id: EntityId,
-    /// The entity itself.
+    /// The entity itself (the target of the row).
     pub entity: &'a Entity,
+    /// The entity the query started from: the source-type entity whose walk reached
+    /// `entity`. For a row with no traversal, this is `entity` itself.
+    pub source: &'a Entity,
     /// Projected field values, in the order of the query's projections.
     /// `None` means the field is missing.
     pub projected: Vec<Option<&'a Value>>,
+    /// The query's projections, so `projected` values can be named.
+    projections: &'a [crate::ast::Projection],
 }
 
 impl<'a> Row<'a> {
-    fn new(entity: &'a Entity, projections: &[crate::ast::Projection]) -> Self {
+    fn new(hit: Hit<'a>, projections: &'a [crate::ast::Projection]) -> Self {
+        let entity = hit.entity;
         Self {
             id: entity.id,
             entity,
+            source: hit.source,
             projected: projections.iter().map(|p| entity.field(&p.field)).collect(),
+            projections,
         }
+    }
+
+    /// The projected values keyed by their field path, e.g. `"material.name"`.
+    /// A missing field is `None`. If two projections name the same path, the
+    /// later one wins. Use [`Row::projected`] when the order matters.
+    pub fn to_map(&self) -> BTreeMap<String, Option<&'a Value>> {
+        self.projections
+            .iter()
+            .zip(&self.projected)
+            .map(|(p, v)| (alloc::format!("{}", p.field), *v))
+            .collect()
     }
 
     /// The entity's field at `path`, e.g. `"material.name"`. `None` if it is missing.
@@ -125,6 +151,9 @@ pub struct Plan {
     /// Conditions that no index answers, so they are checked per candidate. Each entry is
     /// a short description such as `gt on `mass``.
     pub unindexed: Vec<String>,
+    /// `k` of the nearest-`k` selection, if the query has one. The selection is a scan
+    /// with a bounded heap, so it does not use an index.
+    pub nearest: Option<usize>,
 }
 
 impl fmt::Display for Plan {
@@ -143,9 +172,13 @@ impl fmt::Display for Plan {
             None => writeln!(f, "limit: none"),
         }?;
         if self.unindexed.is_empty() {
-            writeln!(f, "unindexed: none")
+            writeln!(f, "unindexed: none")?;
         } else {
-            writeln!(f, "unindexed: {}", self.unindexed.join(", "))
+            writeln!(f, "unindexed: {}", self.unindexed.join(", "))?;
+        }
+        match self.nearest {
+            Some(k) => writeln!(f, "nearest: {k}"),
+            None => Ok(()),
         }
     }
 }
@@ -167,6 +200,13 @@ pub trait Queryable {
     /// Runs `query` and reports the row count at each stage. Rows are read and discarded.
     /// Use it to see where a query spends its candidates.
     fn analyze(&self, query: &Query) -> Result<Analysis, QueryError>;
+
+    /// Like [`Queryable::analyze`], and also times the planning and run phases.
+    /// `clock` returns a monotonic time in nanoseconds; the core has no clock of its
+    /// own, so the caller supplies one (e.g. `Instant` on std). Timings are per
+    /// phase, not per stage: the stages run lazily inside one pass.
+    fn analyze_timed(&self, query: &Query, clock: &dyn Fn() -> u64)
+    -> Result<Analysis, QueryError>;
 }
 
 impl<S: EntitySource> Queryable for S {
@@ -184,22 +224,15 @@ impl<S: EntitySource> Queryable for S {
     }
 
     fn analyze(&self, query: &Query) -> Result<Analysis, QueryError> {
-        if query.aggregate.is_some() {
-            return Err(QueryError::InvalidQuery(alloc::string::String::from(
-                "analyze runs row queries; aggregate queries run through `aggregate`",
-            )));
-        }
-        let plan = prepare(self, query)?.plan;
-        let counts = Rc::new(Counts::default());
-        let mut rows = run_with(self, query, Some(Rc::clone(&counts)))?;
-        rows.try_for_each(|row| row.map(|_| ()))?;
-        Ok(Analysis {
-            plan,
-            read: counts.read.get(),
-            passed_filters: counts.passed_filters.get(),
-            after_traversal: counts.after_traversal.get(),
-            returned: counts.returned.get(),
-        })
+        analyze_inner(self, query, None)
+    }
+
+    fn analyze_timed(
+        &self,
+        query: &Query,
+        clock: &dyn Fn() -> u64,
+    ) -> Result<Analysis, QueryError> {
+        analyze_inner(self, query, Some(clock))
     }
 
     fn aggregate(&self, query: &Query) -> Result<Vec<(Value, Value)>, QueryError> {
@@ -242,8 +275,11 @@ fn prepare<'a>(src: &'a dyn EntitySource, q: &'a Query) -> Result<Prepared<'a>, 
     flatten_and(&q.filters, &mut conjuncts);
 
     let mut best: Option<(usize, IndexHit<'a>)> = None;
+    // Whether some index can answer each conjunct, used by the plan's `unindexed`.
+    let mut answerable = alloc::vec![false; conjuncts.len()];
     for (i, cond) in conjuncts.iter().enumerate() {
         if let Some(hit) = src.index_lookup(q.source, cond) {
+            answerable[i] = true;
             let better = best.as_ref().is_none_or(|(_, b)| hit.len < b.len);
             if better {
                 best = Some((i, hit));
@@ -251,21 +287,36 @@ fn prepare<'a>(src: &'a dyn EntitySource, q: &'a Query) -> Result<Prepared<'a>, 
         }
     }
 
-    let (access, indexed, residual) = match best {
-        Some((chosen, hit)) => {
-            let access = Access::Index {
+    // A composite index can answer several equality conjuncts at once, so it is
+    // compared with the best single-field index by candidate count.
+    let single = best.map(|(i, hit)| (alloc::vec![i], hit));
+    let composite = src.composite_lookup(q.source, &conjuncts);
+    let picked = match (composite, single) {
+        (Some(c), Some(s)) => Some(if c.1.len < s.1.len { c } else { s }),
+        (Some(c), None) => Some(c),
+        (None, s) => s,
+    };
+    let chosen: Vec<usize> = picked
+        .as_ref()
+        .map_or_else(Vec::new, |(used, _)| used.clone());
+    let residual_at: Vec<usize> = (0..conjuncts.len())
+        .filter(|i| !chosen.contains(i))
+        .collect();
+    let unindexed = residual_at
+        .iter()
+        .filter(|i| !answerable[**i])
+        .map(|i| describe(conjuncts[*i]))
+        .collect();
+    let residual: Vec<&Condition> = residual_at.iter().map(|i| conjuncts[*i]).collect();
+    let (access, indexed) = match picked {
+        Some((_, hit)) => (
+            Access::Index {
                 index: hit.index.clone(),
                 candidates: hit.len,
-            };
-            let residual = conjuncts
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != chosen)
-                .map(|(_, c)| *c)
-                .collect();
-            (access, Some(hit), residual)
-        }
-        None => (Access::Scan { ty: q.source }, None, conjuncts),
+            },
+            Some(hit),
+        ),
+        None => (Access::Scan { ty: q.source }, None),
     };
 
     let plan = Plan {
@@ -274,7 +325,8 @@ fn prepare<'a>(src: &'a dyn EntitySource, q: &'a Query) -> Result<Prepared<'a>, 
         traversals: q.traversals.len(),
         ordered: q.order_by.is_some(),
         limit: q.limit,
-        unindexed: residual.iter().map(|c| describe(c)).collect(),
+        unindexed,
+        nearest: q.nearest.as_ref().map(|n| n.k),
     };
     Ok(Prepared {
         plan,
@@ -293,7 +345,15 @@ fn flatten_and<'a>(conds: &'a [Condition], out: &mut Vec<&'a Condition>) {
     }
 }
 
-type Stream<'a> = Box<dyn Iterator<Item = Result<&'a Entity, QueryError>> + 'a>;
+/// A stream item: an entity that passed the stages so far, and the entity the query
+/// started from (the same entity until a traversal moves away from it).
+#[derive(Clone, Copy)]
+struct Hit<'a> {
+    source: &'a Entity,
+    entity: &'a Entity,
+}
+
+type Stream<'a> = Box<dyn Iterator<Item = Result<Hit<'a>, QueryError>> + 'a>;
 
 fn run<'a>(src: &'a dyn EntitySource, q: &'a Query) -> Result<QueryResultIterator<'a>, QueryError> {
     run_with(src, q, None)
@@ -317,9 +377,16 @@ fn run_with<'a>(
     };
     let residual = prep.residual;
     let scanned = ids
-        .map(move |id| src.get(id).ok_or(QueryError::MissingEntity(id)))
+        .map(move |id| {
+            src.get(id)
+                .map(|e| Hit {
+                    source: e,
+                    entity: e,
+                })
+                .ok_or(QueryError::MissingEntity(id))
+        })
         .filter(move |r| match r {
-            Ok(e) => residual.iter().all(|c| eval(c, e, src)),
+            Ok(h) => residual.iter().all(|c| eval(c, h.entity, src)),
             Err(_) => true,
         });
 
@@ -335,15 +402,18 @@ fn run_with<'a>(
     if q.distinct {
         let mut seen = alloc::collections::BTreeSet::new();
         stream = Box::new(stream.filter(move |r| match r {
-            Ok(e) => seen.insert(e.id),
+            Ok(h) => seen.insert(h.entity.id),
             Err(_) => true,
         }));
     }
 
     stream = tally(stream, &counts, |c| &c.after_traversal);
     let mut rows: Box<dyn Iterator<Item = Result<Row<'a>, QueryError>> + 'a> =
-        Box::new(stream.map(move |r| r.map(|e| Row::new(e, &q.projections))));
+        Box::new(stream.map(move |r| r.map(|h| Row::new(h, &q.projections))));
 
+    if let Some(near) = &q.nearest {
+        rows = nearest_rows(rows, near);
+    }
     if let Some(order) = &q.order_by {
         rows = sort_rows(rows, order, q.limit);
     }
@@ -357,6 +427,36 @@ fn run_with<'a>(
     }
     let rows = tally(rows, &counts, |c| &c.returned);
     Ok(QueryResultIterator { inner: rows })
+}
+
+/// Shared body of `analyze` and `analyze_timed`.
+fn analyze_inner<S: EntitySource>(
+    src: &S,
+    query: &Query,
+    clock: Option<&dyn Fn() -> u64>,
+) -> Result<Analysis, QueryError> {
+    if query.aggregate.is_some() {
+        return Err(QueryError::InvalidQuery(alloc::string::String::from(
+            "analyze runs row queries; aggregate queries run through `aggregate`",
+        )));
+    }
+    let now = || clock.map(|c| c());
+    let t0 = now();
+    let plan = prepare(src, query)?.plan;
+    let t1 = now();
+    let counts = Rc::new(Counts::default());
+    let mut rows = run_with(src, query, Some(Rc::clone(&counts)))?;
+    rows.try_for_each(|row| row.map(|_| ()))?;
+    let t2 = now();
+    Ok(Analysis {
+        plan,
+        read: counts.read.get(),
+        passed_filters: counts.passed_filters.get(),
+        after_traversal: counts.after_traversal.get(),
+        returned: counts.returned.get(),
+        plan_nanos: t0.zip(t1).map(|(a, b)| b.saturating_sub(a)),
+        run_nanos: t1.zip(t2).map(|(a, b)| b.saturating_sub(a)),
+    })
 }
 
 /// Row counts at each stage of a run, filled in by [`Queryable::analyze`].
@@ -404,6 +504,81 @@ fn sort_rows<'a>(
         }
         sorted.as_mut()?.next()
     }))
+}
+
+/// Keeps the `k` rows nearest to `near.point`, nearest first. Rows without a box in the
+/// field are dropped. Materializes on first use, with a bounded heap.
+fn nearest_rows<'a>(
+    rows: Box<dyn Iterator<Item = Result<Row<'a>, QueryError>> + 'a>,
+    near: &'a crate::ast::Nearest,
+) -> Box<dyn Iterator<Item = Result<Row<'a>, QueryError>> + 'a> {
+    let mut input = Some(rows);
+    let mut picked: Option<vec::IntoIter<Result<Row<'a>, QueryError>>> = None;
+    Box::new(core::iter::from_fn(move || {
+        if picked.is_none() {
+            let rows = input.take()?;
+            picked = Some(materialize_nearest(rows, near).into_iter());
+        }
+        picked.as_mut()?.next()
+    }))
+}
+
+fn materialize_nearest<'a>(
+    rows: Box<dyn Iterator<Item = Result<Row<'a>, QueryError>> + 'a>,
+    near: &'a crate::ast::Nearest,
+) -> Vec<Result<Row<'a>, QueryError>> {
+    let mut out = Vec::new();
+    // A max-heap on (distance, id), so its top is the farthest row kept so far.
+    let mut top = BinaryHeap::new();
+    for row in rows {
+        match row {
+            Ok(row) => {
+                let Some(Value::Aabb(bounds)) = row.entity.field(&near.field) else {
+                    continue;
+                };
+                let key = bounds.distance_sq(&near.point).to_bits();
+                top.push(NearRow {
+                    key,
+                    id: row.id,
+                    row,
+                });
+                if top.len() > near.k {
+                    top.pop();
+                }
+            }
+            Err(e) => out.push(Err(e)),
+        }
+    }
+    out.extend(top.into_sorted_vec().into_iter().map(|r| Ok(r.row)));
+    out
+}
+
+/// A row with its distance key. Distances are non-negative, so their bit patterns
+/// order the same as the values.
+struct NearRow<'a> {
+    key: u64,
+    id: EntityId,
+    row: Row<'a>,
+}
+
+impl PartialEq for NearRow<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        (self.key, self.id) == (other.key, other.id)
+    }
+}
+
+impl Eq for NearRow<'_> {}
+
+impl PartialOrd for NearRow<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NearRow<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.key, self.id).cmp(&(other.key, other.id))
+    }
 }
 
 fn materialize_sorted<'a>(
@@ -493,10 +668,17 @@ fn traversal_stage<'a>(
         match row {
             Err(e) => Box::new(core::iter::once(Err(e))),
             Ok(start) => Box::new(
-                Walker::new(rel, start.id, &t.edge, t.order, t.max_depth, descend)
-                    .map(move |id| src.get(id).ok_or(QueryError::MissingEntity(id)))
+                Walker::new(rel, start.entity.id, &t.edge, t.order, t.max_depth, descend)
+                    .map(move |id| {
+                        src.get(id)
+                            .map(|e| Hit {
+                                source: start.source,
+                                entity: e,
+                            })
+                            .ok_or(QueryError::MissingEntity(id))
+                    })
                     .filter(move |r| match r {
-                        Ok(e) => t.filters.iter().all(|c| eval(c, e, src)),
+                        Ok(h) => t.filters.iter().all(|c| eval(c, h.entity, src)),
                         Err(_) => true,
                     }),
             ),
@@ -532,6 +714,13 @@ pub(crate) fn eval(cond: &Condition, e: &Entity, src: &dyn EntitySource) -> bool
             matches!(e.field(field), Some(Value::Aabb(a))
                 if (0..3).all(|i| a.min[i] <= point[i] && point[i] <= a.max[i]))
         }
+        Condition::Ray {
+            field,
+            origin,
+            direction,
+            within,
+        } => matches!(e.field(field), Some(Value::Aabb(a))
+            if a.ray_enter(*origin, *direction, *within).is_some()),
         Condition::Related {
             edge,
             max_depth,
@@ -580,6 +769,12 @@ pub struct Analysis {
     pub after_traversal: usize,
     /// Rows returned, after sorting, `offset`, and `limit`.
     pub returned: usize,
+    /// Nanoseconds spent building the plan. `None` unless run with a clock.
+    pub plan_nanos: Option<u64>,
+    /// Nanoseconds spent running the rows. `None` unless run with a clock. This
+    /// includes a second planning pass, since the row stream is built from the query
+    /// again.
+    pub run_nanos: Option<u64>,
 }
 
 /// A short description of a condition for plans: its operator and field.
@@ -595,6 +790,7 @@ fn describe(c: &Condition) -> String {
         Condition::Contains { field, .. } => on("contains", field),
         Condition::Intersects { field, .. } => on("intersects", field),
         Condition::ContainsPoint { field, .. } => on("contains_point", field),
+        Condition::Ray { field, .. } => on("ray", field),
         Condition::In { field, .. } => on("in", field),
         Condition::Exists { field } => on("exists", field),
         Condition::StartsWith { field, .. } => on("starts_with", field),
@@ -607,4 +803,11 @@ fn describe(c: &Condition) -> String {
         Condition::OfTypeIn(_) => String::from("of_type_in"),
         Condition::Related { .. } => String::from("related"),
     }
+}
+
+/// Whether one entity is a result of `q`: it has the source type and passes every
+/// filter. Only meaningful for queries whose results do not depend on other entities,
+/// that is, with no traversals and no relation conditions.
+pub(crate) fn matches(q: &Query, e: &Entity, src: &dyn EntitySource) -> bool {
+    e.ty == q.source && q.filters.iter().all(|c| eval(c, e, src))
 }

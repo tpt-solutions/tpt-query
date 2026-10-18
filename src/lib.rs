@@ -23,8 +23,8 @@
 //! - [`mod@index`] and `spatial` (feature `spatial`): hash and B-tree indexes, and the
 //!   R-tree with nearest-neighbour and ray queries.
 //! - [`schema`]: an optional check of a query against declared field kinds.
-//! - [`advisor`] and [`live`]: index suggestions from a workload, and re-run queries
-//!   that report what changed.
+//! - [`advisor`] and [`live`]: index suggestions from a workload, and queries that report
+//!   what changed, refreshed incrementally when the source has a change feed.
 //! - `json` (feature `json`): the wire format for queries and rows.
 //! - [`mod@aggregate`]: streaming reductions, and [`Aggregation`].
 //! - [`prelude`]: the common names, in one import.
@@ -57,10 +57,10 @@ pub mod traverse;
 mod value_serde;
 
 pub use aggregate::{Aggregation, Metric, aggregate, group_by};
-pub use ast::{Condition, Edge, Order, OrderBy, Projection, Query, Traversal};
+pub use ast::{Condition, Edge, Nearest, Order, OrderBy, Projection, Query, Traversal};
 pub use engine::{Access, Plan, QueryError, QueryResultIterator, Queryable, Row};
 pub use index::{Index, IndexKind, ValueIndex};
 pub use source::{
-    Aabb, Entity, EntityId, EntitySource, EntityTypeId, FieldPath, IndexHit, MemorySource,
+    Aabb, Changes, Entity, EntityId, EntitySource, EntityTypeId, FieldPath, IndexHit, MemorySource,
     RelationMap, Snapshot, Value,
 };

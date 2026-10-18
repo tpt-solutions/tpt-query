@@ -48,6 +48,23 @@ pub struct Query {
     /// proportional to the number of distinct entities yielded.
     #[cfg_attr(feature = "serde", serde(default))]
     pub distinct: bool,
+    /// Keep only the `k` rows whose box is nearest to a point, nearest first. Ties break
+    /// by ascending entity id. Rows whose field is not a box are dropped. Cannot be
+    /// combined with `order_by`, `after`, `offset`, `limit`, or `aggregate`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub nearest: Option<Nearest>,
+}
+
+/// The nearest-`k` selection in a query. See [`Query::nearest`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Nearest {
+    /// Field holding a [`Value::Aabb`].
+    pub field: FieldPath,
+    /// The point to measure from, as `[x, y, z]`.
+    pub point: [f64; 3],
+    /// How many rows to keep.
+    pub k: usize,
 }
 
 /// A field to extract into each result row.
@@ -127,14 +144,22 @@ impl Traversal {
         self
     }
 
-    pub(crate) fn validate(&self) -> Result<(), QueryError> {
+    /// Checks the traversal; `loc` names it in any error (e.g. `traversals[0]`).
+    pub(crate) fn validate_at(&self, loc: &str) -> Result<(), QueryError> {
         if self.max_depth == Some(0) {
-            return Err(QueryError::InvalidQuery(String::from(
-                "traversal max_depth must be >= 1",
-            )));
+            return Err(locate(
+                loc,
+                QueryError::InvalidQuery(String::from("traversal max_depth must be >= 1")),
+            ));
         }
-        self.edge.validate()?;
-        self.filters.iter().try_for_each(Condition::validate)
+        self.edge.validate().map_err(|e| locate(loc, e))?;
+        for (i, c) in self.descend.iter().enumerate() {
+            c.validate_at(&join(loc, &format!("descend[{i}]")))?;
+        }
+        for (i, c) in self.filters.iter().enumerate() {
+            c.validate_at(&join(loc, &format!("filters[{i}]")))?;
+        }
+        Ok(())
     }
 }
 
@@ -252,6 +277,20 @@ pub enum Condition {
         field: FieldPath,
         /// Point to test, as `[x, y, z]`.
         point: [f64; 3],
+    },
+    /// The field is a bounding box that a ray enters at a distance of at most `within`.
+    /// The ray is `origin + t * direction` for `t` in `[0, within]`. A box that the ray
+    /// starts inside counts as entered. A zero direction component means the ray runs
+    /// parallel to that axis.
+    Ray {
+        /// Field holding a [`Value::Aabb`].
+        field: FieldPath,
+        /// Where the ray starts, as `[x, y, z]`.
+        origin: [f64; 3],
+        /// Direction of the ray, as `[x, y, z]`. It need not be normalized.
+        direction: [f64; 3],
+        /// Largest distance along the ray that counts, in units of `direction`.
+        within: f64,
     },
     /// Some entity reached along `edge` (within `max_depth`) satisfies `cond`.
     Related {
@@ -388,7 +427,43 @@ impl Condition {
         }
     }
 
-    pub(crate) fn validate(&self) -> Result<(), QueryError> {
+    /// Checks the condition; `loc` names it in any error, e.g. `filters[2].or[0]`.
+    /// Nested conditions extend `loc`, so the error points at the failing leaf.
+    pub(crate) fn validate_at(&self, loc: &str) -> Result<(), QueryError> {
+        match self {
+            Condition::And(cs) => {
+                for (i, c) in cs.iter().enumerate() {
+                    c.validate_at(&join(loc, &format!("and[{i}]")))?;
+                }
+                Ok(())
+            }
+            Condition::Or(cs) => {
+                for (i, c) in cs.iter().enumerate() {
+                    c.validate_at(&join(loc, &format!("or[{i}]")))?;
+                }
+                Ok(())
+            }
+            Condition::Not(c) => c.validate_at(&join(loc, "not")),
+            Condition::Related {
+                edge,
+                max_depth,
+                cond,
+            } => {
+                if *max_depth == Some(0) {
+                    return Err(locate(
+                        loc,
+                        QueryError::InvalidQuery(String::from("related max_depth must be >= 1")),
+                    ));
+                }
+                edge.validate().map_err(|e| locate(loc, e))?;
+                cond.validate_at(&join(loc, "related"))
+            }
+            leaf => leaf.check_leaf().map_err(|e| locate(loc, e)),
+        }
+    }
+
+    /// Checks a condition with no nested conditions.
+    fn check_leaf(&self) -> Result<(), QueryError> {
         match self {
             Condition::Eq { field, value }
             | Condition::Ne { field, value }
@@ -430,8 +505,6 @@ impl Condition {
                     )))
                 }
             }
-            Condition::And(cs) | Condition::Or(cs) => cs.iter().try_for_each(Condition::validate),
-            Condition::Not(c) => c.validate(),
             Condition::OfType(_) | Condition::OfTypeIn(_) => Ok(()),
             Condition::ContainsPoint { field, point } => {
                 check_path(field)?;
@@ -443,19 +516,29 @@ impl Condition {
                     )))
                 }
             }
-            Condition::Related {
-                edge,
-                max_depth,
-                cond,
+            Condition::Ray {
+                field,
+                origin,
+                direction,
+                within,
             } => {
-                if *max_depth == Some(0) {
-                    return Err(QueryError::InvalidQuery(String::from(
-                        "related max_depth must be >= 1",
-                    )));
+                check_path(field)?;
+                if origin.iter().chain(direction).all(|c| c.is_finite())
+                    && within.is_finite()
+                    && *within >= 0.0
+                {
+                    Ok(())
+                } else {
+                    Err(QueryError::InvalidQuery(String::from(
+                        "ray origin and direction must be finite, and `within` a finite non-negative distance",
+                    )))
                 }
-                edge.validate()?;
-                cond.validate()
             }
+            // Handled by `validate_at`.
+            Condition::And(_)
+            | Condition::Or(_)
+            | Condition::Not(_)
+            | Condition::Related { .. } => Ok(()),
         }
     }
 
@@ -479,7 +562,8 @@ impl Condition {
             | Condition::Between { .. }
             | Condition::OfType(_)
             | Condition::OfTypeIn(_)
-            | Condition::ContainsPoint { .. } => false,
+            | Condition::ContainsPoint { .. }
+            | Condition::Ray { .. } => false,
         }
     }
 }
@@ -498,12 +582,24 @@ impl Query {
             after: None,
             aggregate: None,
             distinct: false,
+            nearest: None,
         }
     }
 
     /// Yields each entity once. See [`Query::distinct`].
     pub fn distinct(mut self) -> Self {
         self.distinct = true;
+        self
+    }
+
+    /// Keeps the `k` rows whose box in `field` is nearest to `point`. See
+    /// [`Query::nearest`] (the field).
+    pub fn nearest(mut self, field: impl Into<FieldPath>, point: [f64; 3], k: usize) -> Self {
+        self.nearest = Some(Nearest {
+            field: field.into(),
+            point,
+            k,
+        });
         self
     }
 
@@ -562,18 +658,25 @@ impl Query {
 
     /// Checks the query's shape: no empty field paths, no zero depths, no empty
     /// edge labels. Does not check the source. Runs automatically on execute.
+    ///
+    /// Errors name the failing part of the query, e.g. `filters[2].and[0]: ...`
+    /// for a bad leaf inside the third top-level filter.
     pub fn validate(&self) -> Result<(), QueryError> {
-        self.filters.iter().try_for_each(Condition::validate)?;
-        self.traversals.iter().try_for_each(Traversal::validate)?;
-        for p in &self.projections {
-            check_path(&p.field)?;
+        for (i, c) in self.filters.iter().enumerate() {
+            c.validate_at(&format!("filters[{i}]"))?;
+        }
+        for (i, t) in self.traversals.iter().enumerate() {
+            t.validate_at(&format!("traversals[{i}]"))?;
+        }
+        for (i, p) in self.projections.iter().enumerate() {
+            check_path(&p.field).map_err(|e| locate(&format!("projections[{i}]"), e))?;
         }
         if let Some(agg) = &self.aggregate {
             if let Some(key) = &agg.group_by {
-                check_path(key)?;
+                check_path(key).map_err(|e| locate("aggregate.group_by", e))?;
             }
             if let Some(path) = agg.metric.path() {
-                check_path(path)?;
+                check_path(path).map_err(|e| locate("aggregate.metric", e))?;
             }
             if !self.projections.is_empty()
                 || self.order_by.is_some()
@@ -581,17 +684,45 @@ impl Query {
                 || self.offset != 0
                 || self.after.is_some()
             {
-                return Err(QueryError::InvalidQuery(String::from(
-                    "aggregate queries take no projections, order_by, limit, offset, or after",
-                )));
+                return Err(locate(
+                    "aggregate",
+                    QueryError::InvalidQuery(String::from(
+                        "aggregate queries take no projections, order_by, limit, offset, or after",
+                    )),
+                ));
             }
         }
         if let Some(o) = &self.order_by {
-            check_path(&o.field)?;
+            check_path(&o.field).map_err(|e| locate("order_by.field", e))?;
             if self.after.is_some() {
-                return Err(QueryError::InvalidQuery(String::from(
-                    "`after` cannot be combined with `order_by`",
-                )));
+                return Err(locate(
+                    "after",
+                    QueryError::InvalidQuery(String::from(
+                        "`after` cannot be combined with `order_by`",
+                    )),
+                ));
+            }
+        }
+        if let Some(n) = &self.nearest {
+            check_path(&n.field).map_err(|e| locate("nearest.field", e))?;
+            if !n.point.iter().all(|c| c.is_finite()) {
+                return Err(locate(
+                    "nearest.point",
+                    QueryError::InvalidQuery(String::from("point coordinates must be finite")),
+                ));
+            }
+            if self.order_by.is_some()
+                || self.after.is_some()
+                || self.offset != 0
+                || self.limit.is_some()
+                || self.aggregate.is_some()
+            {
+                return Err(locate(
+                    "nearest",
+                    QueryError::InvalidQuery(String::from(
+                        "`nearest` cannot be combined with order_by, after, offset, limit, or aggregate; its k is the limit",
+                    )),
+                ));
             }
         }
         Ok(())
@@ -599,6 +730,25 @@ impl Query {
 
     pub(crate) fn needs_relations(&self) -> bool {
         !self.traversals.is_empty() || self.filters.iter().any(Condition::uses_relations)
+    }
+}
+
+/// `loc` joined to `seg` with a dot; `seg` alone when `loc` is empty.
+fn join(loc: &str, seg: &str) -> String {
+    if loc.is_empty() {
+        String::from(seg)
+    } else {
+        format!("{loc}.{seg}")
+    }
+}
+
+/// Prefixes an invalid-query message with the location it came from.
+fn locate(loc: &str, err: QueryError) -> QueryError {
+    match err {
+        QueryError::InvalidQuery(msg) if !loc.is_empty() => {
+            QueryError::InvalidQuery(format!("{loc}: {msg}"))
+        }
+        other => other,
     }
 }
 

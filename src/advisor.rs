@@ -130,7 +130,9 @@ fn classify(cond: &Condition) -> Option<(&FieldPath, Needs)> {
         | Condition::Lt { field, .. }
         | Condition::Lte { field, .. }
         | Condition::Between { field, .. } => one(field, |n| n.range = true),
-        Condition::Intersects { field, .. } => one(field, |n| n.boxes = true),
+        Condition::Intersects { field, .. } | Condition::Ray { field, .. } => {
+            one(field, |n| n.boxes = true)
+        }
         _ => None,
     }
 }

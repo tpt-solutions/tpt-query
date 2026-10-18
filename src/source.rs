@@ -12,7 +12,7 @@ use core::{cmp::Ordering, fmt};
 use crate::{
     ast::Condition,
     engine::QueryError,
-    index::{Index, IndexKind, ValueIndex},
+    index::{CompositeIndex, Index, IndexKind, ValueIndex},
 };
 
 /// Identifier of an entity. Sources iterate entities in ascending id order.
@@ -125,6 +125,51 @@ impl Aabb {
     /// Closed-interval intersection test: touching boxes intersect.
     pub fn intersects(&self, other: &Aabb) -> bool {
         (0..3).all(|i| self.min[i] <= other.max[i] && other.min[i] <= self.max[i])
+    }
+
+    /// Squared distance from `p` to the nearest point of the box (zero inside it).
+    pub fn distance_sq(&self, p: &[f64; 3]) -> f64 {
+        (0..3)
+            .map(|i| {
+                let d = if p[i] < self.min[i] {
+                    self.min[i] - p[i]
+                } else if p[i] > self.max[i] {
+                    p[i] - self.max[i]
+                } else {
+                    0.0
+                };
+                d * d
+            })
+            .sum()
+    }
+
+    /// The distance `t` in `[0, max_t]` at which the ray `origin + t * dir` first enters
+    /// the box, or `None` if it misses or enters after `max_t`. A ray that starts inside
+    /// the box enters at `0`.
+    pub fn ray_enter(&self, origin: [f64; 3], dir: [f64; 3], max_t: f64) -> Option<f64> {
+        let (mut t0, mut t1) = (0.0f64, max_t);
+        for i in 0..3 {
+            if dir[i] == 0.0 {
+                if origin[i] < self.min[i] || origin[i] > self.max[i] {
+                    return None;
+                }
+            } else {
+                let inv = 1.0 / dir[i];
+                let (mut ta, mut tb) = (
+                    (self.min[i] - origin[i]) * inv,
+                    (self.max[i] - origin[i]) * inv,
+                );
+                if ta > tb {
+                    core::mem::swap(&mut ta, &mut tb);
+                }
+                t0 = t0.max(ta);
+                t1 = t1.min(tb);
+                if t0 > t1 {
+                    return None;
+                }
+            }
+        }
+        Some(t0)
     }
 
     /// Smallest box containing both inputs.
@@ -277,6 +322,16 @@ impl From<i32> for Value {
     }
 }
 
+/// `usize` has no `From` impl, because a value above `i64::MAX` cannot be stored as
+/// `Value::Int`. The conversion is checked and fails instead of wrapping.
+impl TryFrom<usize> for Value {
+    type Error = core::num::TryFromIntError;
+
+    fn try_from(v: usize) -> Result<Self, Self::Error> {
+        i64::try_from(v).map(Value::Int)
+    }
+}
+
 impl From<Vec<Value>> for Value {
     fn from(v: Vec<Value>) -> Self {
         Value::List(v)
@@ -389,6 +444,15 @@ pub trait RelationMap {
     fn named(&self, id: EntityId, label: &str) -> &[EntityId];
 }
 
+/// Ids changed after some version, from [`EntitySource::changes_since`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Changes {
+    /// The source's version when the list was taken.
+    pub version: u64,
+    /// Ids whose latest change came after the requested version. Each id appears once.
+    pub ids: Vec<EntityId>,
+}
+
 /// Result of an index lookup: the index used and its candidate ids.
 pub struct IndexHit<'a> {
     /// Name of the index that answered.
@@ -404,6 +468,21 @@ pub trait EntitySource {
     /// Looks up one entity by id.
     fn get(&self, id: EntityId) -> Option<&Entity>;
 
+    /// The source's current change version, or `None` if it keeps no change feed. The
+    /// version only goes up. See [`EntitySource::changes_since`].
+    fn change_version(&self) -> Option<u64> {
+        None
+    }
+
+    /// Ids whose latest change came after `version`, with the current version. `None`
+    /// if the source keeps no change feed. Live queries use it to refresh incrementally,
+    /// and run in full without it. Removed ids are listed too, so the caller can drop
+    /// them. A source that cannot list its changes should return `None`.
+    fn changes_since(&self, version: u64) -> Option<Changes> {
+        let _ = version;
+        None
+    }
+
     /// Iterates the ids of all entities of type `ty`, in ascending order.
     fn ids_of_type<'a>(&'a self, ty: EntityTypeId) -> Box<dyn Iterator<Item = EntityId> + 'a>;
 
@@ -416,6 +495,18 @@ pub trait EntitySource {
     /// index can answer it.
     fn index_lookup<'a>(&'a self, ty: EntityTypeId, cond: &Condition) -> Option<IndexHit<'a>> {
         let _ = (ty, cond);
+        None
+    }
+
+    /// Asks the source's composite indexes for a set of conjuncts. Returns the positions
+    /// (in `conjuncts`) that the index answered, and the candidates. The engine drops
+    /// those conjuncts from the residual filters.
+    fn composite_lookup<'a>(
+        &'a self,
+        ty: EntityTypeId,
+        conjuncts: &[&Condition],
+    ) -> Option<(Vec<usize>, IndexHit<'a>)> {
+        let _ = (ty, conjuncts);
         None
     }
 }
@@ -432,6 +523,14 @@ pub struct MemorySource {
     entities: BTreeMap<EntityId, Entity>,
     by_type: BTreeMap<EntityTypeId, BTreeSet<EntityId>>,
     indexes: Vec<Box<dyn Index>>,
+    composites: Vec<CompositeIndex>,
+    /// Bumped by every insert and remove. See [`EntitySource::change_version`].
+    version: u64,
+    /// The version of each id's latest change, including removals.
+    touched: BTreeMap<EntityId, u64>,
+    /// The ids changed at each version, for ids whose latest change it is. Each id
+    /// appears once, so a change feed lists each id at most once.
+    by_version: BTreeMap<u64, EntityId>,
 }
 
 impl MemorySource {
@@ -466,12 +565,24 @@ impl MemorySource {
         self.by_type.entry(entity.ty).or_default().insert(id);
         self.index(&entity);
         self.entities.insert(id, entity);
+        self.touch(id);
+    }
+
+    /// Records a change to `id` at a new version. Its earlier entry in the change feed
+    /// is dropped, since only the latest change to an id matters to a live query.
+    fn touch(&mut self, id: EntityId) {
+        self.version += 1;
+        if let Some(old) = self.touched.insert(id, self.version) {
+            self.by_version.remove(&old);
+        }
+        self.by_version.insert(self.version, id);
     }
 
     /// Removes an entity, detaching it from its parent and children.
     pub fn remove(&mut self, id: EntityId) -> Option<Entity> {
         let entity = self.entities.remove(&id)?;
         self.unindex(&entity);
+        self.touch(id);
         if let Some(set) = self.by_type.get_mut(&entity.ty) {
             set.remove(&id);
         }
@@ -548,7 +659,7 @@ impl MemorySource {
     /// Adds any [`Index`] implementation, backfilling existing entities. Fails if an
     /// index with the same name already exists.
     pub fn add_index(&mut self, mut index: Box<dyn Index>) -> Result<(), QueryError> {
-        if self.indexes.iter().any(|i| i.name() == index.name()) {
+        if self.index_name_taken(index.name()) {
             return Err(QueryError::DuplicateIndex(String::from(index.name())));
         }
         let ty = index.entity_type();
@@ -563,11 +674,46 @@ impl MemorySource {
         Ok(())
     }
 
-    /// Removes the index named `name`. Returns `false` if there is none.
+    /// Creates a [`CompositeIndex`] over `fields` (in key order) for entities of type
+    /// `ty`, backfilling existing entities. Fails if `fields` is empty, or if an index
+    /// with this name already exists (single-field or composite).
+    pub fn create_composite_index(
+        &mut self,
+        name: &str,
+        ty: EntityTypeId,
+        fields: &[&str],
+    ) -> Result<(), QueryError> {
+        if fields.is_empty() {
+            return Err(QueryError::InvalidQuery(String::from(
+                "a composite index needs at least one field",
+            )));
+        }
+        if self.index_name_taken(name) {
+            return Err(QueryError::DuplicateIndex(String::from(name)));
+        }
+        let fields = fields.iter().map(|f| FieldPath::from(*f)).collect();
+        let mut index = CompositeIndex::new(name, ty, fields);
+        for id in self.by_type.get(&ty).into_iter().flatten() {
+            if let Some(e) = self.entities.get(id) {
+                index.on_insert(e);
+            }
+        }
+        self.composites.push(index);
+        Ok(())
+    }
+
+    fn index_name_taken(&self, name: &str) -> bool {
+        self.indexes.iter().any(|i| i.name() == name)
+            || self.composites.iter().any(|c| c.name() == name)
+    }
+
+    /// Removes the index named `name`, single-field or composite. Returns `false` if
+    /// there is none.
     pub fn drop_index(&mut self, name: &str) -> bool {
-        let before = self.indexes.len();
+        let before = self.indexes.len() + self.composites.len();
         self.indexes.retain(|i| i.name() != name);
-        self.indexes.len() != before
+        self.composites.retain(|c| c.name() != name);
+        self.indexes.len() + self.composites.len() != before
     }
 
     fn index(&mut self, e: &Entity) {
@@ -578,6 +724,13 @@ impl MemorySource {
                 idx.on_insert(e.id, v);
             }
         }
+        for idx in self
+            .composites
+            .iter_mut()
+            .filter(|c| c.entity_type() == e.ty)
+        {
+            idx.on_insert(e);
+        }
     }
 
     fn unindex(&mut self, e: &Entity) {
@@ -587,6 +740,13 @@ impl MemorySource {
             {
                 idx.on_remove(e.id, v);
             }
+        }
+        for idx in self
+            .composites
+            .iter_mut()
+            .filter(|c| c.entity_type() == e.ty)
+        {
+            idx.on_remove(e);
         }
     }
 }
@@ -607,6 +767,21 @@ impl EntitySource for MemorySource {
         Some(self)
     }
 
+    fn change_version(&self) -> Option<u64> {
+        Some(self.version)
+    }
+
+    fn changes_since(&self, version: u64) -> Option<Changes> {
+        Some(Changes {
+            version: self.version,
+            ids: self
+                .by_version
+                .range(version.saturating_add(1)..)
+                .map(|(_, id)| *id)
+                .collect(),
+        })
+    }
+
     /// Asks every index on `ty` and returns the one with the fewest candidates.
     fn index_lookup<'a>(&'a self, ty: EntityTypeId, cond: &Condition) -> Option<IndexHit<'a>> {
         self.indexes
@@ -614,6 +789,19 @@ impl EntitySource for MemorySource {
             .filter(|i| i.entity_type() == ty)
             .filter_map(|i| i.lookup(cond))
             .min_by_key(|hit| hit.len)
+    }
+
+    /// Asks every composite index on `ty` and returns the one with the fewest candidates.
+    fn composite_lookup<'a>(
+        &'a self,
+        ty: EntityTypeId,
+        conjuncts: &[&Condition],
+    ) -> Option<(Vec<usize>, IndexHit<'a>)> {
+        self.composites
+            .iter()
+            .filter(|c| c.entity_type() == ty)
+            .filter_map(|c| c.lookup(conjuncts))
+            .min_by_key(|(_, hit)| hit.len)
     }
 }
 

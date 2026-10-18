@@ -115,6 +115,17 @@ impl Schema {
         if let Some(o) = &query.order_by {
             check_declared(&o.field)?;
         }
+        if let Some(n) = &query.nearest {
+            match check_declared(&n.field)? {
+                FieldKind::Aabb | FieldKind::Any => {}
+                other => {
+                    return Err(QueryError::InvalidQuery(format!(
+                        "field `{}` is {other:?} but `nearest` needs an Aabb field",
+                        n.field
+                    )));
+                }
+            }
+        }
         if let Some(agg) = &query.aggregate {
             if let Some(key) = &agg.group_by {
                 check_declared(key)?;
@@ -177,14 +188,14 @@ fn check_condition(
         Condition::Exists { field }
         | Condition::StartsWith { field, .. }
         | Condition::EndsWith { field, .. } => declared(field).map(|_| ()),
-        Condition::Intersects { field, .. } | Condition::ContainsPoint { field, .. } => {
-            match declared(field)? {
-                FieldKind::Aabb | FieldKind::Any => Ok(()),
-                other => Err(QueryError::InvalidQuery(format!(
-                    "field `{field}` is {other:?} but a box query needs an Aabb field"
-                ))),
-            }
-        }
+        Condition::Intersects { field, .. }
+        | Condition::ContainsPoint { field, .. }
+        | Condition::Ray { field, .. } => match declared(field)? {
+            FieldKind::Aabb | FieldKind::Any => Ok(()),
+            other => Err(QueryError::InvalidQuery(format!(
+                "field `{field}` is {other:?} but a box query needs an Aabb field"
+            ))),
+        },
         Condition::And(cs) | Condition::Or(cs) => {
             cs.iter().try_for_each(|c| check_condition(c, declared))
         }

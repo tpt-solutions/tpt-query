@@ -39,7 +39,7 @@ use core::fmt::{self, Write as _};
 
 use crate::{
     aggregate::{Aggregation, Metric},
-    ast::{Condition, Edge, Order, OrderBy, Projection, Query, Traversal},
+    ast::{Condition, Edge, Nearest, Order, OrderBy, Projection, Query, Traversal},
     engine::QueryError,
     source::{Aabb, EntityId, EntityTypeId, FieldPath, Value},
 };
@@ -57,6 +57,7 @@ const RESERVED: &[&str] = &[
     "after",
     "distinct",
     "aggregate",
+    "nearest",
     "group",
     "asc",
     "desc",
@@ -426,6 +427,7 @@ impl Parser {
         let mut seen_limit = false;
         let mut seen_after = false;
         let mut seen_aggregate = false;
+        let mut seen_nearest = false;
         while self.peek().is_some() {
             if self.eat_word("where") {
                 q.filters.push(self.or_cond()?);
@@ -484,6 +486,18 @@ impl Parser {
                 }
                 seen_aggregate = true;
                 q.aggregate = Some(self.aggregation()?);
+            } else if self.eat_word("nearest") {
+                if seen_nearest {
+                    return self.error("`nearest` appears twice");
+                }
+                seen_nearest = true;
+                let field = self.field()?;
+                self.expect_word("to")?;
+                let point = self.point()?;
+                self.expect_word("k")?;
+                let k =
+                    usize::try_from(self.unsigned()?).or_else(|_| self.error("k is too large"))?;
+                q.nearest = Some(Nearest { field, point, k });
             } else {
                 return self.error("expected a clause");
             }
@@ -687,6 +701,20 @@ impl Parser {
                         let point = self.point()?;
                         return Ok(Condition::ContainsPoint { field, point });
                     }
+                    "ray" => {
+                        self.expect_word("from")?;
+                        let origin = self.point()?;
+                        self.expect_word("dir")?;
+                        let direction = self.point()?;
+                        self.expect_word("within")?;
+                        let within = self.number()?;
+                        return Ok(Condition::Ray {
+                            field,
+                            origin,
+                            direction,
+                            within,
+                        });
+                    }
                     "in" => {
                         let values = self.list_of_values()?;
                         return Ok(Condition::In { field, values });
@@ -866,6 +894,13 @@ impl fmt::Display for Query {
         for (i, p) in self.projections.iter().enumerate() {
             f.write_str(if i == 0 { " select " } else { ", " })?;
             write_field(f, &p.field)?;
+        }
+        if let Some(n) = &self.nearest {
+            f.write_str(" nearest ")?;
+            write_field(f, &n.field)?;
+            f.write_str(" to ")?;
+            write_point(f, &n.point)?;
+            write!(f, " k {}", n.k)?;
         }
         if let Some(o) = &self.order_by {
             f.write_str(" order by ")?;
@@ -1058,6 +1093,19 @@ fn write_cond(f: &mut fmt::Formatter<'_>, c: &Condition) -> fmt::Result {
             write_field(f, field)?;
             f.write_str(" contains_point ")?;
             write_point(f, point)
+        }
+        Condition::Ray {
+            field,
+            origin,
+            direction,
+            within,
+        } => {
+            write_field(f, field)?;
+            f.write_str(" ray from ")?;
+            write_point(f, origin)?;
+            f.write_str(" dir ")?;
+            write_point(f, direction)?;
+            write!(f, " within {within:?}")
         }
         Condition::And(cs) => {
             f.write_str("all(")?;

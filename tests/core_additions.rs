@@ -115,3 +115,10 @@ fn descend_while_does_not_block_the_start_node() {
     );
     assert_eq!(ids(&s, &q), vec![2]);
 }
+
+#[test]
+fn usize_converts_checked_to_value() {
+    use tpt_query::Value;
+    assert_eq!(Value::try_from(7usize), Ok(Value::Int(7)));
+    assert!(Value::try_from(usize::MAX).is_err());
+}

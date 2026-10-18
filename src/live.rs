@@ -1,16 +1,17 @@
-//! Live queries: re-run a query and report which results were added or removed.
+//! Live queries: report which results were added or removed since the last refresh.
 //!
-//! This is not incremental. Each refresh runs the whole query and diffs the ids
-//! against the previous run, so its cost is that of a full run. The first refresh
-//! reports every current result as added. Incremental maintenance, driven by the
-//! source's insert, update, and remove calls, is still to do.
+//! When the source keeps a change feed (see [`crate::EntitySource::changes_since`]),
+//! and the query's results depend only on each entity alone (no traversals, no
+//! relation conditions, no ordering, paging, distinct, or nearest selection), a refresh
+//! re-checks just the entities that changed. Otherwise it re-runs the whole query and
+//! diffs the ids. [`MemorySource`](crate::MemorySource) keeps a change feed.
 
 use alloc::{collections::BTreeSet, vec::Vec};
 
 use crate::{
     ast::Query,
-    engine::{QueryError, Queryable},
-    source::{EntityId, EntitySource},
+    engine::{self, QueryError, Queryable},
+    source::{Changes, EntityId, EntitySource},
 };
 
 /// Results that appeared or disappeared since the previous refresh. Both lists are in
@@ -29,6 +30,9 @@ pub struct Delta {
 pub struct LiveQuery {
     query: Query,
     last: BTreeSet<EntityId>,
+    /// The source's change version at the last refresh, when incremental refresh is
+    /// possible. `None` until a full refresh has run.
+    version: Option<u64>,
 }
 
 impl LiveQuery {
@@ -37,12 +41,43 @@ impl LiveQuery {
         Self {
             query,
             last: BTreeSet::new(),
+            version: None,
         }
     }
 
     /// Runs the query against `src` and returns what changed since the last refresh.
     /// On error the previous result is kept.
     pub fn refresh<S: EntitySource>(&mut self, src: &S) -> Result<Delta, QueryError> {
+        if let Some(since) = self.version
+            && self.is_per_entity()
+            && let Some(changes) = src.changes_since(since)
+        {
+            return Ok(self.apply(src, changes));
+        }
+        self.full_refresh(src)
+    }
+
+    /// The ids from the last refresh, in ascending order.
+    pub fn current(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.last.iter().copied()
+    }
+
+    /// Whether each entity's membership depends only on its own fields.
+    fn is_per_entity(&self) -> bool {
+        let q = &self.query;
+        !q.needs_relations()
+            && q.nearest.is_none()
+            && q.order_by.is_none()
+            && q.limit.is_none()
+            && q.offset == 0
+            && q.after.is_none()
+            && !q.distinct
+            && q.aggregate.is_none()
+    }
+
+    fn full_refresh<S: EntitySource>(&mut self, src: &S) -> Result<Delta, QueryError> {
+        // Read the version first, so a change made while the query runs is seen next time.
+        let version = src.change_version();
         let mut now = BTreeSet::new();
         for row in src.execute(&self.query)? {
             now.insert(row?.id);
@@ -50,11 +85,35 @@ impl LiveQuery {
         let added = now.difference(&self.last).copied().collect();
         let removed = self.last.difference(&now).copied().collect();
         self.last = now;
+        self.version = version.filter(|_| self.is_per_entity());
         Ok(Delta { added, removed })
     }
 
-    /// The ids from the last refresh, in ascending order.
-    pub fn current(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.last.iter().copied()
+    /// Re-checks only the changed ids. Each id's membership is decided from its current
+    /// state, so the result matches a full run.
+    fn apply<S: EntitySource>(&mut self, src: &S, changes: Changes) -> Delta {
+        let mut added = BTreeSet::new();
+        let mut removed = BTreeSet::new();
+        for id in changes.ids {
+            let member = src
+                .get(id)
+                .is_some_and(|e| engine::matches(&self.query, e, src));
+            match (self.last.contains(&id), member) {
+                (false, true) => {
+                    self.last.insert(id);
+                    added.insert(id);
+                }
+                (true, false) => {
+                    self.last.remove(&id);
+                    removed.insert(id);
+                }
+                _ => {}
+            }
+        }
+        self.version = Some(changes.version);
+        Delta {
+            added: added.into_iter().collect(),
+            removed: removed.into_iter().collect(),
+        }
     }
 }

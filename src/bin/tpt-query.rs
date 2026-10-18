@@ -143,11 +143,18 @@ fn run(o: Options) -> Result<(), String> {
         println!("{}", src.explain(&query).map_err(|e| e.to_string())?);
     }
     if o.analyze {
-        let a = src.analyze(&query).map_err(|e| e.to_string())?;
+        let start = std::time::Instant::now();
+        let clock = || u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let a = src
+            .analyze_timed(&query, &clock)
+            .map_err(|e| e.to_string())?;
         println!(
             "read {}, passed filters {}, after traversal {}, returned {}",
             a.read, a.passed_filters, a.after_traversal, a.returned
         );
+        if let (Some(plan), Some(run)) = (a.plan_nanos, a.run_nanos) {
+            println!("plan {plan} ns, run {run} ns");
+        }
         return Ok(());
     }
     let out = if query.aggregate.is_some() {
