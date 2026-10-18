@@ -88,6 +88,7 @@ bash scripts/ci.sh                                  # fmt, clippy, tests, benche
 cargo bench --bench index                           # indexed lookups vs scans (criterion)
 cargo run --example quickstart                      # the quick start above
 cargo run --example doc_outline                     # headings, traversals, and keyset paging
+cargo run --example cookbook                      # the cookbook recipes, with real plans
 echo '{"source":1}' | cargo run --example json_cli --features json   # JSON in, JSON rows out
 TPT_UPDATE_GOLDEN=1 cargo test --test golden        # regenerate golden results after an intended change
 ```

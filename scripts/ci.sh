@@ -28,6 +28,7 @@ cargo test --no-default-features
 echo "==> examples"
 cargo run --example quickstart
 cargo run --example doc_outline
+cargo run --example cookbook
 cargo run --example custom_source
 cargo run --example spreadsheet_range
 cargo run --example cad_viewport --features spatial

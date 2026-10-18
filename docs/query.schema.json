@@ -16,10 +16,15 @@
     "offset": { "type": "integer", "minimum": 0, "default": 0 },
     "distinct": { "type": "boolean", "default": false, "description": "Yield each entity once, the first time it appears." },
     "after": { "type": ["integer", "null"], "minimum": 0, "description": "Keyset cursor: resume after this source entity id. Not allowed with order_by." },
-    "aggregate": { "oneOf": [{ "$ref": "#/$defs/Aggregation" }, { "type": "null" }], "description": "Turns the query into a reduction. Not allowed with projections, order_by, limit, offset, or after." }
+    "aggregate": { "oneOf": [{ "$ref": "#/$defs/Aggregation" }, { "type": "null" }], "description": "Turns the query into a reduction. Not allowed with projections, order_by, limit, offset, or after." },
+    "nearest": { "oneOf": [{ "$ref": "#/$defs/Nearest" }, { "type": "null" }], "description": "Keeps the k rows whose box is nearest to a point, nearest first. Not allowed with order_by, after, offset, limit, or aggregate." }
   },
   "$defs": {
     "FieldPath": { "type": "string", "minLength": 1, "description": "Dotted path, e.g. \"material.name\". Empty segments are rejected." },
+    "Nearest": {
+      "type": "object", "required": ["field", "point", "k"], "additionalProperties": false,
+      "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "point": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }, "k": { "type": "integer", "minimum": 0 } }
+    },
     "Projection": {
       "type": "object", "required": ["field"], "additionalProperties": false,
       "properties": { "field": { "$ref": "#/$defs/FieldPath" } }
@@ -125,6 +130,9 @@
         { "type": "object", "required": ["ContainsPoint"], "additionalProperties": false,
           "properties": { "ContainsPoint": { "type": "object", "required": ["field", "point"], "additionalProperties": false,
             "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "point": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 } } } } },
+        { "type": "object", "required": ["Ray"], "additionalProperties": false,
+          "properties": { "Ray": { "type": "object", "required": ["field", "origin", "direction", "within"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "origin": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }, "direction": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }, "within": { "type": "number", "minimum": 0 } } } } },
         { "type": "object", "required": ["Between"], "additionalProperties": false,
           "properties": { "Between": { "type": "object", "required": ["field", "low", "high"], "additionalProperties": false,
             "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "low": { "$ref": "#/$defs/Value" }, "high": { "$ref": "#/$defs/Value" } } } } }
