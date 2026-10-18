@@ -64,11 +64,11 @@ impl EntitySource for Counting<'_> {
         Some(self)
     }
 
-    fn index_lookup(
-        &self,
+    fn index_lookup<'a>(
+        &'a self,
         ty: EntityTypeId,
         cond: &tpt_query::Condition,
-    ) -> Option<tpt_query::IndexHit> {
+    ) -> Option<tpt_query::IndexHit<'a>> {
         self.inner.index_lookup(ty, cond)
     }
 }

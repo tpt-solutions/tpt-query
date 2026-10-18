@@ -1,0 +1,8 @@
+{
+  "entities": [
+    { "id": 1, "type": 1, "fields": { "name": "bracket", "material": "Titanium", "mass": 12.5 }, "named": { "bolt": [2] } },
+    { "id": 2, "type": 1, "fields": { "name": "bolt", "material": "Steel", "mass": 0.4 } },
+    { "id": 3, "type": 1, "fields": { "name": "plate", "material": "Aluminium", "mass": 3.25 } },
+    { "id": 4, "type": 2, "fields": { "area": 4.5 }, "parent": 3 }
+  ]
+}

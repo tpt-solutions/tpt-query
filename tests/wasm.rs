@@ -16,7 +16,8 @@ const FACE: EntityTypeId = EntityTypeId(2);
 #[wasm_bindgen_test]
 fn filter_index_and_traversal_run_on_wasm() {
     let mut s = MemorySource::new();
-    s.create_index("by_material", PART, "material", IndexKind::Hash);
+    s.create_index("by_material", PART, "material", IndexKind::Hash)
+        .unwrap();
     s.insert(Entity::new(EntityId(1), PART).with_field("material", "Titanium"));
     s.insert(Entity::new(EntityId(2), PART).with_field("material", "Steel"));
     s.insert(Entity::new(EntityId(3), FACE).with_field("area", 4.5f64));

@@ -12,14 +12,30 @@ cd "$(dirname "$0")/.."
 echo "==> fmt"
 cargo fmt --all -- --check
 
-echo "==> clippy"
+echo "==> clippy (no features, then all features)"
+cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 
 echo "==> test (all features)"
 cargo test --all-features
 
+echo "==> test (spatial only)"
+cargo test --no-default-features --features spatial
+
 echo "==> test (no features)"
 cargo test --no-default-features
+
+echo "==> examples"
+cargo run --example quickstart
+cargo run --example doc_outline
+cargo run --example custom_source
+cargo run --example spreadsheet_range
+cargo run --example cad_viewport --features spatial
+echo '{"source":1,"filters":[{"Eq":{"field":"material","value":"Steel"}}]}' | cargo run -q --example json_cli --features json > /dev/null
+cargo run -q --features cli --bin tpt-query -- --entities tests/fixtures/scene.json --dsl 'from 1 where material = "Steel" select name' >/dev/null
+
+echo "==> no_std build with spatial"
+cargo build --no-default-features --features spatial
 
 echo "==> bench (compile only)"
 cargo bench --no-run

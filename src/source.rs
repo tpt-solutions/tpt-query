@@ -11,6 +11,7 @@ use core::{cmp::Ordering, fmt};
 
 use crate::{
     ast::Condition,
+    engine::QueryError,
     index::{Index, IndexKind, ValueIndex},
 };
 
@@ -36,10 +37,26 @@ pub struct FieldPath {
 
 impl FieldPath {
     /// Splits `path` on `.`. Empty segments are kept so validation can reject them.
+    ///
+    /// A backslash escapes the next character, so `a\.b` is one segment `a.b`, and
+    /// `a\\b` is one segment `a\b`. [`Display`](fmt::Display) escapes the same way, so
+    /// parsing the text of a path gives the path back.
     pub fn parse(path: &str) -> Self {
-        Self {
-            segments: path.split('.').map(String::from).collect(),
+        let mut segments = Vec::new();
+        let mut current = String::new();
+        let mut chars = path.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    Some(escaped) => current.push(escaped),
+                    None => current.push('\\'),
+                },
+                '.' => segments.push(core::mem::take(&mut current)),
+                _ => current.push(c),
+            }
         }
+        segments.push(current);
+        Self { segments }
     }
 
     /// The path segments in order.
@@ -72,7 +89,12 @@ impl fmt::Display for FieldPath {
             if i > 0 {
                 f.write_str(".")?;
             }
-            f.write_str(seg)?;
+            for c in seg.chars() {
+                if matches!(c, '.' | '\\') {
+                    f.write_str("\\")?;
+                }
+                write!(f, "{c}")?;
+            }
         }
         Ok(())
     }
@@ -143,7 +165,7 @@ impl Aabb {
 /// queries only compare values of the same kind, so `Int(1)` never equals
 /// `Float(1.0)`.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Value {
     /// Absent or unknown value.
     Null,
@@ -206,6 +228,58 @@ impl Ord for Value {
             (Value::Map(a), Value::Map(b)) => a.cmp(b),
             _ => self.rank().cmp(&other.rank()),
         }
+    }
+}
+
+impl Value {
+    /// The string, if this is a [`Value::Str`].
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The integer, if this is a [`Value::Int`]. Floats are not converted.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The float, if this is a [`Value::Float`]. Integers are not converted.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// The boolean, if this is a [`Value::Bool`].
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+impl From<u32> for Value {
+    fn from(v: u32) -> Self {
+        Value::Int(i64::from(v))
+    }
+}
+
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Value::Int(i64::from(v))
+    }
+}
+
+impl From<Vec<Value>> for Value {
+    fn from(v: Vec<Value>) -> Self {
+        Value::List(v)
     }
 }
 
@@ -295,10 +369,12 @@ pub(crate) fn resolve<'a>(
     let mut segs = path.segments().iter();
     let mut cur = fields.get(segs.next()?)?;
     for seg in segs {
-        match cur {
-            Value::Map(m) => cur = m.get(seg)?,
+        cur = match cur {
+            Value::Map(m) => m.get(seg)?,
+            // A numeric segment indexes a list, so `items.0` is the first item.
+            Value::List(items) => items.get(seg.parse::<usize>().ok()?)?,
             _ => return None,
-        }
+        };
     }
     Some(cur)
 }
@@ -313,13 +389,14 @@ pub trait RelationMap {
     fn named(&self, id: EntityId, label: &str) -> &[EntityId];
 }
 
-/// Result of an index lookup: the index used and its sorted, unique candidate ids.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexHit {
+/// Result of an index lookup: the index used and its candidate ids.
+pub struct IndexHit<'a> {
     /// Name of the index that answered.
     pub index: String,
-    /// Candidate ids, ascending and unique.
-    pub ids: Vec<EntityId>,
+    /// Number of candidate ids, known before they are read.
+    pub len: usize,
+    /// Candidate ids, ascending and unique. Read lazily from the index.
+    pub ids: Box<dyn Iterator<Item = EntityId> + 'a>,
 }
 
 /// Something the query engine can read entities from.
@@ -337,7 +414,7 @@ pub trait EntitySource {
 
     /// Asks the source's indexes for candidates matching `cond`, or `None` if no
     /// index can answer it.
-    fn index_lookup(&self, ty: EntityTypeId, cond: &Condition) -> Option<IndexHit> {
+    fn index_lookup<'a>(&'a self, ty: EntityTypeId, cond: &Condition) -> Option<IndexHit<'a>> {
         let _ = (ty, cond);
         None
     }
@@ -457,19 +534,23 @@ impl MemorySource {
     }
 
     /// Creates a [`ValueIndex`] over `field` for entities of type `ty`, backfilling
-    /// existing entities.
+    /// existing entities. Fails if an index with this name already exists.
     pub fn create_index(
         &mut self,
         name: &str,
         ty: EntityTypeId,
         field: impl Into<FieldPath>,
         kind: IndexKind,
-    ) {
-        self.add_index(Box::new(ValueIndex::new(name, ty, field, kind)));
+    ) -> Result<(), QueryError> {
+        self.add_index(Box::new(ValueIndex::new(name, ty, field, kind)))
     }
 
-    /// Adds any [`Index`] implementation, backfilling existing entities.
-    pub fn add_index(&mut self, mut index: Box<dyn Index>) {
+    /// Adds any [`Index`] implementation, backfilling existing entities. Fails if an
+    /// index with the same name already exists.
+    pub fn add_index(&mut self, mut index: Box<dyn Index>) -> Result<(), QueryError> {
+        if self.indexes.iter().any(|i| i.name() == index.name()) {
+            return Err(QueryError::DuplicateIndex(String::from(index.name())));
+        }
         let ty = index.entity_type();
         for id in self.by_type.get(&ty).into_iter().flatten() {
             if let Some(e) = self.entities.get(id)
@@ -479,6 +560,14 @@ impl MemorySource {
             }
         }
         self.indexes.push(index);
+        Ok(())
+    }
+
+    /// Removes the index named `name`. Returns `false` if there is none.
+    pub fn drop_index(&mut self, name: &str) -> bool {
+        let before = self.indexes.len();
+        self.indexes.retain(|i| i.name() != name);
+        self.indexes.len() != before
     }
 
     fn index(&mut self, e: &Entity) {
@@ -518,20 +607,76 @@ impl EntitySource for MemorySource {
         Some(self)
     }
 
-    fn index_lookup(&self, ty: EntityTypeId, cond: &Condition) -> Option<IndexHit> {
+    /// Asks every index on `ty` and returns the one with the fewest candidates.
+    fn index_lookup<'a>(&'a self, ty: EntityTypeId, cond: &Condition) -> Option<IndexHit<'a>> {
         self.indexes
             .iter()
             .filter(|i| i.entity_type() == ty)
-            .find_map(|i| {
-                i.lookup(cond).map(|ids| IndexHit {
-                    index: i.name().to_string(),
-                    ids,
-                })
-            })
+            .filter_map(|i| i.lookup(cond))
+            .min_by_key(|hit| hit.len)
     }
 }
 
 impl RelationMap for MemorySource {
+    fn parent(&self, id: EntityId) -> Option<EntityId> {
+        self.entities.get(&id)?.parent
+    }
+
+    fn children(&self, id: EntityId) -> &[EntityId] {
+        match self.entities.get(&id) {
+            Some(e) => e.children.as_slice(),
+            None => &[],
+        }
+    }
+
+    fn named(&self, id: EntityId, label: &str) -> &[EntityId] {
+        match self.entities.get(&id).and_then(|e| e.named.get(label)) {
+            Some(targets) => targets.as_slice(),
+            None => &[],
+        }
+    }
+}
+
+/// A read-only copy of a [`MemorySource`] at one moment. Later writes to the source do
+/// not show in it.
+///
+/// Taking a snapshot copies every entity, so it costs O(N). The copy keeps no indexes,
+/// so queries on it scan and traverse, and they return the same rows an indexed query
+/// returns on the source. Use it for a long read that must not see concurrent changes.
+#[derive(Debug, Clone, Default)]
+pub struct Snapshot {
+    entities: BTreeMap<EntityId, Entity>,
+    by_type: BTreeMap<EntityTypeId, BTreeSet<EntityId>>,
+}
+
+impl MemorySource {
+    /// Copies the current entities into a [`Snapshot`]. See the type's docs for the cost.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            entities: self.entities.clone(),
+            by_type: self.by_type.clone(),
+        }
+    }
+}
+
+impl EntitySource for Snapshot {
+    fn get(&self, id: EntityId) -> Option<&Entity> {
+        self.entities.get(&id)
+    }
+
+    fn ids_of_type<'a>(&'a self, ty: EntityTypeId) -> Box<dyn Iterator<Item = EntityId> + 'a> {
+        match self.by_type.get(&ty) {
+            Some(set) => Box::new(set.iter().copied()),
+            None => Box::new(core::iter::empty()),
+        }
+    }
+
+    fn relations(&self) -> Option<&dyn RelationMap> {
+        Some(self)
+    }
+}
+
+impl RelationMap for Snapshot {
     fn parent(&self, id: EntityId) -> Option<EntityId> {
         self.entities.get(&id)?.parent
     }

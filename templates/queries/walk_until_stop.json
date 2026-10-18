@@ -1,0 +1,14 @@
+{
+  "source": 1,
+  "filters": [{ "Eq": { "field": "name", "value": "root" } }],
+  "traversals": [
+    {
+      "edge": "Child",
+      "order": "BreadthFirst",
+      "max_depth": 4,
+      "descend": [{ "Ne": { "field": "kind", "value": "stop" } }]
+    }
+  ],
+  "distinct": true,
+  "projections": [{ "field": "name" }]
+}

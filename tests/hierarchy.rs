@@ -278,3 +278,28 @@ fn walks_do_not_scan_the_whole_collection() {
     // Linear growth gives about 4x for 4x the nodes; quadratic gives about 16x.
     assert!(ratio < 6.0, "work grew by {ratio:.1}x for 4x the nodes");
 }
+
+/// A -> [B, C], B -> E -> F, C -> F, F -> G. F is 2 hops from A via C but 3 hops via
+/// B, so a depth-limited walk must still reach G (3 hops via C).
+#[test]
+fn depth_limited_walks_reach_nodes_through_shorter_paths_in_a_dag() {
+    let mut s = MemorySource::new();
+    for (id, name) in [(1, "A"), (2, "B"), (3, "C"), (4, "E"), (5, "F"), (6, "G")] {
+        s.insert(Entity::new(EntityId(id), PART).with_field("name", name));
+    }
+    for (from, to) in [(1, 2), (1, 3), (2, 4), (4, 5), (3, 5), (5, 6)] {
+        s.link_named(EntityId(from), "e", EntityId(to));
+    }
+    for order in [Order::DepthFirst, Order::BreadthFirst] {
+        let q = Query::new(PART)
+            .filter(Condition::eq_to("name", "A"))
+            .traverse(Traversal::recursive(
+                Edge::Named("e".into()),
+                order,
+                Some(3),
+            ));
+        let mut got = ids(&s, &q);
+        got.sort();
+        assert_eq!(got, vec![2, 3, 4, 5, 6], "{order:?}");
+    }
+}

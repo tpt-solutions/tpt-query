@@ -12,7 +12,8 @@ const FACE: EntityTypeId = EntityTypeId(2);
 
 fn main() {
     let mut src = MemorySource::new();
-    src.create_index("by_material", PART, "material", IndexKind::Hash);
+    src.create_index("by_material", PART, "material", IndexKind::Hash)
+        .unwrap();
     src.insert(Entity::new(EntityId(1), PART).with_field("material", "Titanium"));
     src.insert(Entity::new(EntityId(2), FACE).with_field("area", 4.5f64));
     src.link_child(EntityId(1), EntityId(2));

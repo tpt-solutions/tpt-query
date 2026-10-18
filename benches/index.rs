@@ -15,7 +15,8 @@ const PART: EntityTypeId = EntityTypeId(1);
 fn build(n: u64, indexed: bool) -> MemorySource {
     let mut s = MemorySource::new();
     if indexed {
-        s.create_index("by_code", PART, "code", IndexKind::Hash);
+        s.create_index("by_code", PART, "code", IndexKind::Hash)
+            .unwrap();
     }
     for i in 1..=n {
         s.insert(Entity::new(EntityId(i), PART).with_field("code", i as i64));

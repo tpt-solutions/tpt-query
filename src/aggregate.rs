@@ -10,6 +10,8 @@ use crate::{
 
 /// A reduction over a stream of rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Metric {
     /// Number of rows.
     Count,
@@ -24,7 +26,7 @@ pub enum Metric {
 }
 
 impl Metric {
-    fn path(&self) -> Option<&FieldPath> {
+    pub(crate) fn path(&self) -> Option<&FieldPath> {
         match self {
             Metric::Count => None,
             Metric::Sum(p) | Metric::Min(p) | Metric::Max(p) | Metric::Avg(p) => Some(p),
@@ -147,4 +149,16 @@ where
         .iter()
         .map(|(k, acc)| (k.clone(), acc.finish(metric)))
         .collect())
+}
+
+/// A reduction a query runs instead of returning rows. Build it into a query with
+/// `Query::aggregate`, and run it with `Queryable::aggregate`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Aggregation {
+    /// The reduction to run.
+    pub metric: Metric,
+    /// Field to group by. `None` reduces all rows to one value.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub group_by: Option<FieldPath>,
 }

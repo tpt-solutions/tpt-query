@@ -67,7 +67,8 @@ fn touching_boxes_intersect() {
 #[test]
 fn intersects_through_a_source_uses_the_index() {
     let mut s = MemorySource::new();
-    s.add_index(Box::new(RTreeIndex::new("by_bbox", PART, "bbox")));
+    s.add_index(Box::new(RTreeIndex::new("by_bbox", PART, "bbox")))
+        .unwrap();
     let mut rng = Rng::new(5);
     let mut boxes = Vec::new();
     for i in 1..=400u64 {

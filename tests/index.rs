@@ -10,8 +10,10 @@ const MATERIALS: [&str; 3] = ["Steel", "Titanium", "Aluminium"];
 
 fn indexed() -> MemorySource {
     let mut s = MemorySource::new();
-    s.create_index("by_material", PART, "material", IndexKind::Hash);
-    s.create_index("by_mass", PART, "mass", IndexKind::BTree);
+    s.create_index("by_material", PART, "material", IndexKind::Hash)
+        .unwrap();
+    s.create_index("by_mass", PART, "mass", IndexKind::BTree)
+        .unwrap();
     s
 }
 
@@ -95,7 +97,8 @@ fn index_backfills_existing_entities() {
     let mut s = MemorySource::new();
     s.insert(part(1, "Steel", 10));
     s.insert(part(2, "Titanium", 20));
-    s.create_index("late", PART, "material", IndexKind::Hash);
+    s.create_index("late", PART, "material", IndexKind::Hash)
+        .unwrap();
     let q = Query::new(PART).filter(Condition::eq_to("material", "Titanium"));
     assert_eq!(ids(&s, &q), vec![2]);
 }

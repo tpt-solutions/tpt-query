@@ -1,0 +1,5 @@
+{
+  "source": 1,
+  "filters": [{ "Exists": { "field": "material" } }],
+  "aggregate": { "metric": { "Sum": "mass" }, "group_by": "material" }
+}

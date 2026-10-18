@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tpt-solutions/tpt-query/blob/master/docs/query.schema.json",
+  "title": "tpt-query query",
+  "description": "A query against one entity type, in the serde form read by tpt_query::json (feature json). Field paths are dotted strings. Values are plain JSON; see $defs/Value.",
+  "type": "object",
+  "required": ["source"],
+  "additionalProperties": false,
+  "properties": {
+    "source": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Entity type id." },
+    "filters": { "type": "array", "items": { "$ref": "#/$defs/Condition" }, "default": [] },
+    "traversals": { "type": "array", "items": { "$ref": "#/$defs/Traversal" }, "default": [] },
+    "projections": { "type": "array", "items": { "$ref": "#/$defs/Projection" }, "default": [] },
+    "limit": { "type": ["integer", "null"], "minimum": 0 },
+    "order_by": { "oneOf": [{ "$ref": "#/$defs/OrderBy" }, { "type": "null" }] },
+    "offset": { "type": "integer", "minimum": 0, "default": 0 },
+    "distinct": { "type": "boolean", "default": false, "description": "Yield each entity once, the first time it appears." },
+    "after": { "type": ["integer", "null"], "minimum": 0, "description": "Keyset cursor: resume after this source entity id. Not allowed with order_by." },
+    "aggregate": { "oneOf": [{ "$ref": "#/$defs/Aggregation" }, { "type": "null" }], "description": "Turns the query into a reduction. Not allowed with projections, order_by, limit, offset, or after." }
+  },
+  "$defs": {
+    "FieldPath": { "type": "string", "minLength": 1, "description": "Dotted path, e.g. \"material.name\". Empty segments are rejected." },
+    "Projection": {
+      "type": "object", "required": ["field"], "additionalProperties": false,
+      "properties": { "field": { "$ref": "#/$defs/FieldPath" } }
+    },
+    "OrderBy": {
+      "type": "object", "required": ["field", "descending"], "additionalProperties": false,
+      "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "descending": { "type": "boolean" } }
+    },
+    "Edge": {
+      "oneOf": [
+        { "const": "Parent" },
+        { "const": "Child" },
+        { "type": "object", "required": ["Named"], "additionalProperties": false,
+          "properties": { "Named": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "Order": { "enum": ["DepthFirst", "BreadthFirst"] },
+    "Traversal": {
+      "type": "object", "required": ["edge", "order"], "additionalProperties": false,
+      "properties": {
+        "edge": { "$ref": "#/$defs/Edge" },
+        "order": { "$ref": "#/$defs/Order" },
+        "max_depth": { "type": ["integer", "null"], "minimum": 1 },
+        "filters": { "type": "array", "items": { "$ref": "#/$defs/Condition" }, "default": [] },
+        "descend": { "type": "array", "items": { "$ref": "#/$defs/Condition" }, "default": [], "description": "Nodes below the start must meet these before the walk continues from them." }
+      }
+    },
+    "Metric": {
+      "oneOf": [
+        { "const": "Count" },
+        { "type": "object", "required": ["Sum"], "additionalProperties": false, "properties": { "Sum": { "$ref": "#/$defs/FieldPath" } } },
+        { "type": "object", "required": ["Min"], "additionalProperties": false, "properties": { "Min": { "$ref": "#/$defs/FieldPath" } } },
+        { "type": "object", "required": ["Max"], "additionalProperties": false, "properties": { "Max": { "$ref": "#/$defs/FieldPath" } } },
+        { "type": "object", "required": ["Avg"], "additionalProperties": false, "properties": { "Avg": { "$ref": "#/$defs/FieldPath" } } }
+      ]
+    },
+    "Aggregation": {
+      "type": "object", "required": ["metric"], "additionalProperties": false,
+      "properties": {
+        "metric": { "$ref": "#/$defs/Metric" },
+        "group_by": { "oneOf": [{ "$ref": "#/$defs/FieldPath" }, { "type": "null" }] }
+      }
+    },
+    "Value": {
+      "description": "Plain JSON value. A bounding box is the single-key object {\"Aabb\": {\"min\": [x, y, z], \"max\": [x, y, z]}}.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array" },
+        { "type": "object" }
+      ]
+    },
+    "FieldValueArgs": {
+      "type": "object", "required": ["field", "value"], "additionalProperties": false,
+      "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "value": { "$ref": "#/$defs/Value" } }
+    },
+    "FieldArgs": {
+      "type": "object", "required": ["field"], "additionalProperties": false,
+      "properties": { "field": { "$ref": "#/$defs/FieldPath" } }
+    },
+    "Condition": {
+      "description": "Exactly one variant key. Comparison variants match values of the same kind only.",
+      "oneOf": [
+        { "type": "object", "required": ["Eq"], "additionalProperties": false, "properties": { "Eq": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Ne"], "additionalProperties": false, "properties": { "Ne": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Gt"], "additionalProperties": false, "properties": { "Gt": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Gte"], "additionalProperties": false, "properties": { "Gte": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Lt"], "additionalProperties": false, "properties": { "Lt": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Lte"], "additionalProperties": false, "properties": { "Lte": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Contains"], "additionalProperties": false, "properties": { "Contains": { "$ref": "#/$defs/FieldValueArgs" } } },
+        { "type": "object", "required": ["Intersects"], "additionalProperties": false,
+          "properties": { "Intersects": { "type": "object", "required": ["field", "bounds"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "bounds": { "type": "object", "required": ["min", "max"] } } } } },
+        { "type": "object", "required": ["And"], "additionalProperties": false,
+          "properties": { "And": { "type": "array", "items": { "$ref": "#/$defs/Condition" } } } },
+        { "type": "object", "required": ["Or"], "additionalProperties": false,
+          "properties": { "Or": { "type": "array", "items": { "$ref": "#/$defs/Condition" } } } },
+        { "type": "object", "required": ["Not"], "additionalProperties": false,
+          "properties": { "Not": { "$ref": "#/$defs/Condition" } } },
+        { "type": "object", "required": ["OfType"], "additionalProperties": false,
+          "properties": { "OfType": { "type": "integer", "minimum": 0, "maximum": 4294967295 } } },
+        { "type": "object", "required": ["Related"], "additionalProperties": false,
+          "properties": { "Related": { "type": "object", "required": ["edge", "cond"], "additionalProperties": false,
+            "properties": {
+              "edge": { "$ref": "#/$defs/Edge" },
+              "max_depth": { "type": ["integer", "null"], "minimum": 1 },
+              "cond": { "$ref": "#/$defs/Condition" } } } } },
+        { "type": "object", "required": ["In"], "additionalProperties": false,
+          "properties": { "In": { "type": "object", "required": ["field", "values"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "values": { "type": "array", "items": { "$ref": "#/$defs/Value" } } } } } },
+        { "type": "object", "required": ["Exists"], "additionalProperties": false,
+          "properties": { "Exists": { "$ref": "#/$defs/FieldArgs" } } },
+        { "type": "object", "required": ["StartsWith"], "additionalProperties": false,
+          "properties": { "StartsWith": { "type": "object", "required": ["field", "value"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "value": { "type": "string" } } } } },
+        { "type": "object", "required": ["EndsWith"], "additionalProperties": false,
+          "properties": { "EndsWith": { "type": "object", "required": ["field", "value"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "value": { "type": "string" } } } } },
+        { "type": "object", "required": ["OfTypeIn"], "additionalProperties": false,
+          "properties": { "OfTypeIn": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4294967295 } } } },
+        { "type": "object", "required": ["ContainsPoint"], "additionalProperties": false,
+          "properties": { "ContainsPoint": { "type": "object", "required": ["field", "point"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "point": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 } } } } },
+        { "type": "object", "required": ["Between"], "additionalProperties": false,
+          "properties": { "Between": { "type": "object", "required": ["field", "low", "high"], "additionalProperties": false,
+            "properties": { "field": { "$ref": "#/$defs/FieldPath" }, "low": { "$ref": "#/$defs/Value" }, "high": { "$ref": "#/$defs/Value" } } } } }
+      ]
+    }
+  }
+}

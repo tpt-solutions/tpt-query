@@ -1,0 +1,12 @@
+{
+  "source": 2,
+  "filters": [
+    {
+      "Intersects": {
+        "field": "bbox",
+        "bounds": { "min": [0.0, 0.0, 0.0], "max": [10.0, 10.0, 10.0] }
+      }
+    }
+  ],
+  "limit": 100
+}

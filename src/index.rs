@@ -2,15 +2,19 @@
 //! sync by [`crate::MemorySource`] on every insert, update, and delete.
 
 use alloc::{
-    collections::{BTreeMap, BTreeSet},
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, btree_set},
     string::String,
     vec::Vec,
 };
-use core::ops::Bound::{Excluded, Included, Unbounded};
+use core::{
+    cmp::Reverse,
+    ops::Bound::{Excluded, Included, Unbounded},
+};
 
 use crate::{
     ast::Condition,
-    source::{EntityId, EntityTypeId, FieldPath, Value},
+    source::{EntityId, EntityTypeId, FieldPath, IndexHit, Value},
 };
 
 /// Which lookups a [`ValueIndex`] supports.
@@ -34,15 +38,18 @@ pub trait Index {
     fn on_insert(&mut self, id: EntityId, value: &Value);
     /// Removes the entry recorded by `on_insert` for `id` and `value`.
     fn on_remove(&mut self, id: EntityId, value: &Value);
-    /// Candidate ids that satisfy `cond`, ascending and unique. `None` when this
-    /// index cannot answer `cond`. The answer must match the query evaluator exactly.
-    fn lookup(&self, cond: &Condition) -> Option<Vec<EntityId>>;
+    /// Candidate ids that satisfy `cond`, as an ascending, unique iterator whose
+    /// length is known up front. `None` when this index cannot answer `cond`. The
+    /// answer must match the query evaluator exactly.
+    fn lookup<'a>(&'a self, cond: &Condition) -> Option<IndexHit<'a>>;
 }
 
 /// An ordered map from field value to entity ids.
 ///
 /// Both kinds are backed by a `BTreeMap` (the crate is `no_std` without a hash
-/// map), so exact lookups are O(log N) rather than O(1).
+/// map), so exact lookups are O(log N) rather than O(1). Lookups are lazy: an
+/// exact match iterates the stored id set directly, and a range merges the sets of
+/// its keys as it goes. Nothing is copied out of the index.
 pub struct ValueIndex {
     name: String,
     ty: EntityTypeId,
@@ -64,40 +71,51 @@ impl ValueIndex {
         }
     }
 
-    /// Ids whose value has the same kind as `bound` and lies in the given
+    /// The id sets of every key whose kind matches `bound` and that lies in the given
     /// direction. Range scans never leave the kind's block of the ordering.
-    fn range(&self, bound: &Value, below: bool, inclusive: bool) -> Vec<EntityId> {
+    fn range<'a>(
+        &'a self,
+        bound: &Value,
+        below: bool,
+        inclusive: bool,
+    ) -> Vec<&'a BTreeSet<EntityId>> {
         let rank = bound.rank();
-        let mut out = BTreeSet::new();
         if below {
             let hi = if inclusive {
                 Included(bound)
             } else {
                 Excluded(bound)
             };
-            for (_, ids) in self
-                .map
+            self.map
                 .range((Unbounded, hi))
                 .rev()
                 .take_while(|(k, _)| k.rank() == rank)
-            {
-                out.extend(ids.iter().copied());
-            }
+                .map(|(_, ids)| ids)
+                .collect()
         } else {
             let lo = if inclusive {
                 Included(bound)
             } else {
                 Excluded(bound)
             };
-            for (_, ids) in self
-                .map
+            self.map
                 .range((lo, Unbounded))
                 .take_while(|(k, _)| k.rank() == rank)
-            {
-                out.extend(ids.iter().copied());
-            }
+                .map(|(_, ids)| ids)
+                .collect()
         }
-        out.into_iter().collect()
+    }
+
+    fn hit<'a>(&'a self, sets: Vec<&'a BTreeSet<EntityId>>) -> IndexHit<'a> {
+        IndexHit {
+            index: self.name.clone(),
+            len: sets.iter().map(|s| s.len()).sum(),
+            ids: Box::new(Merge::new(sets)),
+        }
+    }
+
+    fn is_range(&self, field: &FieldPath) -> bool {
+        self.kind == IndexKind::BTree && field == &self.field
     }
 }
 
@@ -127,33 +145,68 @@ impl Index for ValueIndex {
         }
     }
 
-    fn lookup(&self, cond: &Condition) -> Option<Vec<EntityId>> {
-        match cond {
-            Condition::Eq { field, value } if field == &self.field => Some(
-                self.map
-                    .get(value)
-                    .map(|ids| ids.iter().copied().collect())
-                    .unwrap_or_default(),
-            ),
+    fn lookup<'a>(&'a self, cond: &Condition) -> Option<IndexHit<'a>> {
+        let sets = match cond {
+            Condition::Eq { field, value } if field == &self.field => {
+                self.map.get(value).into_iter().collect()
+            }
             Condition::Gt { field, value } if self.is_range(field) => {
-                Some(self.range(value, false, false))
+                self.range(value, false, false)
             }
             Condition::Gte { field, value } if self.is_range(field) => {
-                Some(self.range(value, false, true))
+                self.range(value, false, true)
             }
             Condition::Lt { field, value } if self.is_range(field) => {
-                Some(self.range(value, true, false))
+                self.range(value, true, false)
             }
             Condition::Lte { field, value } if self.is_range(field) => {
-                Some(self.range(value, true, true))
+                self.range(value, true, true)
             }
-            _ => None,
+            _ => return None,
+        };
+        Some(self.hit(sets))
+    }
+}
+
+/// Ascending merge of id sets, produced lazily. Each entity has one value for the
+/// indexed field, so the sets are disjoint. A repeated id is still skipped.
+struct Merge<'a> {
+    sets: Vec<btree_set::Iter<'a, EntityId>>,
+    /// The next unread id of each set, smallest first. The `usize` is the set's index.
+    heads: BinaryHeap<Reverse<(EntityId, usize)>>,
+    last: Option<EntityId>,
+}
+
+impl<'a> Merge<'a> {
+    fn new(sets: Vec<&'a BTreeSet<EntityId>>) -> Self {
+        let mut iters: Vec<_> = sets.into_iter().map(|s| s.iter()).collect();
+        let mut heads = BinaryHeap::with_capacity(iters.len());
+        for (i, it) in iters.iter_mut().enumerate() {
+            if let Some(&id) = it.next() {
+                heads.push(Reverse((id, i)));
+            }
+        }
+        Self {
+            sets: iters,
+            heads,
+            last: None,
         }
     }
 }
 
-impl ValueIndex {
-    fn is_range(&self, field: &FieldPath) -> bool {
-        self.kind == IndexKind::BTree && field == &self.field
+impl Iterator for Merge<'_> {
+    type Item = EntityId;
+
+    fn next(&mut self) -> Option<EntityId> {
+        loop {
+            let Reverse((id, i)) = self.heads.pop()?;
+            if let Some(&next) = self.sets[i].next() {
+                self.heads.push(Reverse((next, i)));
+            }
+            if self.last != Some(id) {
+                self.last = Some(id);
+                return Some(id);
+            }
+        }
     }
 }

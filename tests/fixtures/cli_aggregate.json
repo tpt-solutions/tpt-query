@@ -1,0 +1,4 @@
+{
+  "source": 1,
+  "aggregate": { "metric": { "Sum": "mass" }, "group_by": "material" }
+}

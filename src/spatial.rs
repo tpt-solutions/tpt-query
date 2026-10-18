@@ -4,7 +4,7 @@
 //! underfull nodes, so heavy churn can leave the tree less tight than a fresh bulk
 //! load. Results are always exact.
 
-use alloc::{vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use crate::{
     ast::Condition,
@@ -316,16 +316,138 @@ impl Index for RTreeIndex {
         }
     }
 
-    fn lookup(&self, cond: &Condition) -> Option<Vec<EntityId>> {
+    fn lookup<'a>(&'a self, cond: &Condition) -> Option<crate::source::IndexHit<'a>> {
         match cond {
             Condition::Intersects { field, bounds } if field == &self.field => {
+                // The tree search is not lazy, so the hits are collected here.
                 let mut out = Vec::new();
                 self.tree.search(bounds, &mut out);
                 out.sort_unstable();
                 out.dedup();
-                Some(out)
+                Some(crate::source::IndexHit {
+                    index: self.name.clone(),
+                    len: out.len(),
+                    ids: Box::new(out.into_iter()),
+                })
             }
             _ => None,
         }
+    }
+}
+
+/// Distance along a ray, `origin + t * dir` for `t` in `[0, max_t]`, at which the ray
+/// first enters `bbox`. `None` if it misses the box or enters after `max_t`. A ray that
+/// starts inside the box enters at `0`.
+pub fn ray_enter(bbox: &Aabb, origin: [f64; 3], dir: [f64; 3], max_t: f64) -> Option<f64> {
+    let (mut t0, mut t1) = (0.0f64, max_t);
+    for i in 0..3 {
+        if dir[i] == 0.0 {
+            if origin[i] < bbox.min[i] || origin[i] > bbox.max[i] {
+                return None;
+            }
+        } else {
+            let inv = 1.0 / dir[i];
+            let (mut ta, mut tb) = (
+                (bbox.min[i] - origin[i]) * inv,
+                (bbox.max[i] - origin[i]) * inv,
+            );
+            if ta > tb {
+                core::mem::swap(&mut ta, &mut tb);
+            }
+            t0 = t0.max(ta);
+            t1 = t1.min(tb);
+            if t0 > t1 {
+                return None;
+            }
+        }
+    }
+    Some(t0)
+}
+
+/// Squared distance from `p` to the nearest point of `bbox` (zero inside it).
+fn dist2(bbox: &Aabb, p: &[f64; 3]) -> f64 {
+    (0..3)
+        .map(|i| {
+            let d = if p[i] < bbox.min[i] {
+                bbox.min[i] - p[i]
+            } else if p[i] > bbox.max[i] {
+                p[i] - bbox.max[i]
+            } else {
+                0.0
+            };
+            d * d
+        })
+        .sum()
+}
+
+impl RTree {
+    /// The `k` entries nearest to `point`, closest first. Distance is measured from the
+    /// point to each entry's box, so a box that contains the point is at distance zero.
+    /// Ties are broken by id.
+    pub fn nearest(&self, point: [f64; 3], k: usize) -> Vec<EntityId> {
+        use alloc::collections::BinaryHeap;
+        use core::cmp::Reverse;
+
+        let mut out = Vec::new();
+        if k == 0 {
+            return out;
+        }
+        // Keys are (squared distance bits, 0 for a node or 1 for an entry, index or id).
+        // Non-negative floats order the same as their bit patterns.
+        let mut heap = BinaryHeap::new();
+        let root = &self.nodes[self.root];
+        heap.push(Reverse((
+            dist2(&root.bbox, &point).to_bits(),
+            0u8,
+            self.root as u64,
+        )));
+        while let Some(Reverse((_, kind, v))) = heap.pop() {
+            if kind == 1 {
+                out.push(EntityId(v));
+                if out.len() == k {
+                    break;
+                }
+                continue;
+            }
+            match &self.nodes[v as usize].kind {
+                Kind::Leaf(entries) => {
+                    for (b, id) in entries {
+                        heap.push(Reverse((dist2(b, &point).to_bits(), 1, id.0)));
+                    }
+                }
+                Kind::Inner(children) => {
+                    for &c in children {
+                        let d = dist2(&self.nodes[c].bbox, &point);
+                        heap.push(Reverse((d.to_bits(), 0, c as u64)));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Entries whose box the ray enters within `max_t`, as `(entry distance, id)`,
+    /// nearest first. Ties are broken by id. See [`ray_enter`].
+    pub fn ray(&self, origin: [f64; 3], dir: [f64; 3], max_t: f64) -> Vec<(f64, EntityId)> {
+        let mut out = Vec::new();
+        let mut stack = alloc::vec![self.root];
+        while let Some(idx) = stack.pop() {
+            let node = &self.nodes[idx];
+            if ray_enter(&node.bbox, origin, dir, max_t).is_none() {
+                continue;
+            }
+            match &node.kind {
+                Kind::Leaf(entries) => {
+                    for (b, id) in entries {
+                        if let Some(t) = ray_enter(b, origin, dir, max_t) {
+                            out.push((t, *id));
+                        }
+                    }
+                }
+                Kind::Inner(children) => stack.extend(children.iter().copied()),
+            }
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        out
     }
 }

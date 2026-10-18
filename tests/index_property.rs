@@ -32,8 +32,10 @@ fn op() -> impl Strategy<Value = Op> {
 
 fn indexed() -> MemorySource {
     let mut s = MemorySource::new();
-    s.create_index("by_material", PART, "material", IndexKind::Hash);
-    s.create_index("by_mass", PART, "mass", IndexKind::BTree);
+    s.create_index("by_material", PART, "material", IndexKind::Hash)
+        .unwrap();
+    s.create_index("by_mass", PART, "mass", IndexKind::BTree)
+        .unwrap();
     s
 }
 

@@ -9,6 +9,10 @@ description = "Embedded, pure-Rust, no_std declarative query engine for structur
 readme = "README.md"
 keywords = ["query", "no_std", "graph", "index", "embedded"]
 categories = ["no-std", "database-implementations"]
+repository = "https://github.com/tpt-solutions/tpt-query"
+homepage = "https://github.com/tpt-solutions/tpt-query"
+documentation = "https://docs.rs/tpt-query"
+exclude = ["/.github/", "/scripts/", "/target/", "/TODO.md"]
 
 [features]
 default = []
@@ -20,6 +24,8 @@ spatial = []
 serde = ["dep:serde"]
 # JSON string format for the query AST (implies `serde`).
 json = ["serde", "dep:serde_json"]
+# Command-line runner (src/bin/tpt-query.rs). Implies `json`.
+cli = ["json"]
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
@@ -43,3 +49,15 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 [[bench]]
 name = "index"
 harness = false
+
+[[example]]
+name = "json_cli"
+required-features = ["json"]
+
+[[example]]
+name = "cad_viewport"
+required-features = ["spatial"]
+
+[[bin]]
+name = "tpt-query"
+required-features = ["cli"]

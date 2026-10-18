@@ -1,0 +1,7 @@
+{
+  "source": 1,
+  "filters": [{ "Eq": { "field": "material", "value": "Steel" } }],
+  "projections": [{ "field": "name" }, { "field": "mass" }],
+  "after": 0,
+  "limit": 20
+}

@@ -19,9 +19,29 @@ server, no C FFI, and no unsafe code.
   and delete. The planner picks the most selective index, and `explain` reports the
   plan.
 - **Aggregation**: streaming `Count`, `Sum`, `Min`, `Max`, `Avg`, and `group_by`.
-- **JSON AST** (feature `json`) for cross-language clients.
+- **Set, presence, string, and range conditions**: `In`, `Exists`, `StartsWith`, `EndsWith`, and inclusive `Between`.
+- **Paging**: `offset`, and keyset paging with `after(id)` that resumes after the last id seen.
+- **JSON** (feature `json`): the query AST, plain JSON values, and result rows via `execute_json`.
+- **Recipes**: [docs/cookbook.md](docs/cookbook.md) has recipes for common tasks, several backed by examples and tests.
 - **Deterministic results**: sources yield ids in ascending order, and traversals
   follow insertion order.
+
+## At a glance
+
+An indexed point lookup over 1,000,000 entities takes about 0.85 µs on the development
+machine, against 153 ms for a full scan. Queries stream, so `limit` stops work early,
+and `order_by` with a `limit` keeps only the best rows. Which index to build for which
+query shape, and what each stage holds in memory, is in
+[docs/performance.md](docs/performance.md).
+
+| Query shape | Index |
+|---|---|
+| `eq_to` on a field | hash |
+| `gt`, `gte`, `lt`, `lte`, `between` | B-tree (also serves equality) |
+| `intersects` on a box field | R-tree (feature `spatial`) |
+
+`in` is checked per candidate for now. It is not index-backed yet.
+
 
 ## Quick start
 
@@ -32,7 +52,7 @@ const PART: EntityTypeId = EntityTypeId(1);
 const FACE: EntityTypeId = EntityTypeId(2);
 
 let mut src = MemorySource::new();
-src.create_index("by_material", PART, "material", IndexKind::Hash);
+src.create_index("by_material", PART, "material", IndexKind::Hash).unwrap();
 src.insert(Entity::new(EntityId(1), PART).with_field("material", "Titanium"));
 src.insert(Entity::new(EntityId(2), FACE).with_field("area", 4.5f64));
 src.link_child(EntityId(1), EntityId(2));
@@ -57,7 +77,7 @@ println!("{}", src.explain(&query).unwrap());
 | `std`     | `std::error::Error` for `QueryError`                        |
 | `spatial` | R-tree index (`spatial::RTree`, `spatial::RTreeIndex`)      |
 | `serde`   | Serialize/Deserialize on the query AST and values           |
-| `json`    | `json::query_from_json` / `query_to_json` (implies `serde`) |
+| `json`    | `json::query_from_json` / `query_to_json` / `execute_json` (implies `serde`) |
 
 The core builds without any features.
 
@@ -67,6 +87,8 @@ The core builds without any features.
 bash scripts/ci.sh                                  # fmt, clippy, tests, benches, no_std and wasm checks
 cargo bench --bench index                           # indexed lookups vs scans (criterion)
 cargo run --example quickstart                      # the quick start above
+cargo run --example doc_outline                     # headings, traversals, and keyset paging
+echo '{"source":1}' | cargo run --example json_cli --features json   # JSON in, JSON rows out
 TPT_UPDATE_GOLDEN=1 cargo test --test golden        # regenerate golden results after an intended change
 ```
 
