@@ -1,0 +1,8 @@
+[template]
+cargo_generate_version = ">=0.20.0"
+description = "A binary that loads entities and runs a tpt-query query"
+
+[placeholders.tpt_query_version]
+type = "string"
+prompt = "tpt-query version to depend on"
+default = "0.1"

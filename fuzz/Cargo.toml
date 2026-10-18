@@ -1,0 +1,25 @@
+[package]
+name = "tpt-query-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.tpt-query]
+path = ".."
+features = ["json"]
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "query_from_json"
+path = "fuzz_targets/query_from_json.rs"
+test = false
+doc = false
+bench = false
