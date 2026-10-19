@@ -30,6 +30,8 @@ All notable changes to this project are recorded here. The format follows
 - `prelude` module, and the `docs/cookbook.md` recipes.
 - Rustdoc quick start and a runnable example for the crate and each module, run by
   `cargo test --doc`.
+- `Between` is answered from a B-tree index on the field, like the other range
+  conditions. Before, it was always evaluated as a filter.
 - Examples `doc_outline` and `json_cli`, both run by `scripts/ci.sh`.
 - Aggregation in the query: `Query::aggregate` and `Queryable::aggregate`, grouped or
   ungrouped. `json::aggregate_json` returns `[{"key", "value"}]`.

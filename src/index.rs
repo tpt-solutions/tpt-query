@@ -14,17 +14,18 @@
 //! }
 //!
 //! // A range on an indexed field reads only the matching candidates.
-//! let query = Query::new(EntityTypeId(1))
-//!     .filter(Condition::gte("mass", 10))
-//!     .filter(Condition::lte("mass", 12));
+//! let query = Query::new(EntityTypeId(1)).filter(Condition::Between {
+//!     field: FieldPath::parse("mass"),
+//!     low: Value::Int(10),
+//!     high: Value::Int(12),
+//! });
 //! let plan = src.explain(&query).unwrap();
 //! assert!(matches!(plan.access, Access::Index { ref index, .. } if index == "by_mass"));
 //! assert_eq!(src.execute(&query).unwrap().count(), 3);
 //! ```
 //!
 //! A [`IndexKind::Hash`] index answers equality only. A [`IndexKind::BTree`] index also
-//! answers `Gt`, `Gte`, `Lt`, and `Lte`. `Between` is checked as a filter and does not use
-//! the index, so write a range as `Gte` plus `Lte` to get the index.
+//! answers `Gt`, `Gte`, `Lt`, `Lte`, and `Between`.
 
 use alloc::{
     boxed::Box,
@@ -131,6 +132,21 @@ impl ValueIndex {
         }
     }
 
+    /// The id sets of every key from `low` to `high`, both inclusive. Empty when the
+    /// bounds are of different kinds, or when `low` is above `high`. `BTreeMap::range`
+    /// panics on the latter, so it must not be reached.
+    fn between<'a>(&'a self, low: &Value, high: &Value) -> Vec<&'a BTreeSet<EntityId>> {
+        let rank = low.rank();
+        if low.rank() != high.rank() || low > high {
+            return Vec::new();
+        }
+        self.map
+            .range((Included(low), Included(high)))
+            .take_while(|(k, _)| k.rank() == rank)
+            .map(|(_, ids)| ids)
+            .collect()
+    }
+
     fn hit<'a>(&'a self, sets: Vec<&'a BTreeSet<EntityId>>) -> IndexHit<'a> {
         IndexHit {
             index: self.name.clone(),
@@ -186,6 +202,9 @@ impl Index for ValueIndex {
             }
             Condition::Lte { field, value } if self.is_range(field) => {
                 self.range(value, true, true)
+            }
+            Condition::Between { field, low, high } if self.is_range(field) => {
+                self.between(low, high)
             }
             _ => return None,
         };

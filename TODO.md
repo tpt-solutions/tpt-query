@@ -72,7 +72,7 @@ Deviations from the decisions above (see notes on each item):
 
 ## Later / follow-ups
 - [ ] Replace stub layer with real `tpt-uir` / `tpt-model`. Blocked: `cargo info tpt-uir` (crates.io index, 2026-10-19) reports the crate is not found. Decision: 1.0 does not wait for it. The stub trait stays until the crate exists and its API is checked against `EntitySource`.
-- [ ] Index-accelerate `Condition::Between`. The planner and `ValueIndex::lookup` handle only `Eq` and one-sided ranges, so `Between` is always a filter. The advisor already suggests a B-tree for `Between` fields.
+- [x] Index-accelerate `Condition::Between`. `ValueIndex::lookup` answers it from the B-tree, with inverted bounds returning no rows. Tests: `tests/index.rs` (`between_uses_the_btree_and_matches_a_scan`, `between_with_inverted_bounds_is_empty_and_does_not_panic`).
 - [ ] Integration examples for tpt-vertex, tpt-doc, tpt-lattice
 - [ ] Optional Datalog text syntax (currently out of scope)
 
@@ -121,7 +121,7 @@ Source: review plan in `~/.claude/plans/review-platform-for-bugs-peaceful-anchor
 - [x] `docs/cookbook.md`: 19 recipes with builder code and JSON. Plan output under each row recipe comes from `examples/cookbook.rs`, which CI runs
 - [x] Copy-paste JSON query templates in `templates/queries/` (four). `tests/templates.rs` parses, validates, and round-trips each one. `cargo-generate` template in `templates/cargo-generate/` (`cargo generate --path templates/cargo-generate`). Generated project builds and runs against the local crate; the dependency is `tpt-query = "0.1"` until it is published.
 - [~] README restructure: at-a-glance benchmark numbers, the index table, and the features and examples are updated. Decided: no competitor table yet. A fair comparison needs the same data and machine for every library, and recorded versions. Deferred until someone names the comparison set. The `tpt-uir` migration note waits on the crate (see Later / follow-ups).
-- [x] Performance model: `docs/performance.md` (what streams, what materializes, planning cost). Crate-level rustdoc guide with doctests per module: done. `src/lib.rs` has a quick start and a module guide, and each module has a runnable example. `cargo test --doc` passes under all, spatial-only, and no features. Found while writing them: `Condition::Between` is not index-accelerated (see Later / follow-ups), so the index example uses `Gte` plus `Lte`.
+- [x] Performance model: `docs/performance.md` (what streams, what materializes, planning cost). Crate-level rustdoc guide with doctests per module: done. `src/lib.rs` has a quick start and a module guide, and each module has a runnable example. `cargo test --doc` passes under all, spatial-only, and no features. Found while writing them: `Condition::Between` was not index-accelerated. Fixed since (see Later / follow-ups).
 - [x] `tpt-query` CLI: a binary behind feature `cli`. Decided: an in-crate binary, not a separate crate. Loads entities from JSON, runs DSL or JSON queries, and prints rows, the plan, or the analysis.
 - [ ] `tpt-query-uir` adapter crate once `tpt-uir` exists
 

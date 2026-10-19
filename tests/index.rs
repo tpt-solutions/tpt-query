@@ -4,7 +4,9 @@
 mod common;
 
 use common::{PART, ids};
-use tpt_query::{Access, Condition, Entity, EntityId, IndexKind, MemorySource, Query, Queryable};
+use tpt_query::{
+    Access, Condition, Entity, EntityId, IndexKind, MemorySource, Query, Queryable, Value,
+};
 
 const MATERIALS: [&str; 3] = ["Steel", "Titanium", "Aluminium"];
 
@@ -113,4 +115,45 @@ fn range_queries_stay_within_the_value_kind() {
     // sort after Int in the index ordering.
     let q = Query::new(PART).filter(Condition::gt("mass", 0i64));
     assert_eq!(ids(&s, &q), vec![1]);
+}
+
+#[test]
+fn between_uses_the_btree_and_matches_a_scan() {
+    let mut indexed_src = indexed();
+    let mut scanned = MemorySource::new();
+    for i in 1..=50u64 {
+        indexed_src.insert(part(i, MATERIALS[(i % 3) as usize], i as i64));
+        scanned.insert(part(i, MATERIALS[(i % 3) as usize], i as i64));
+    }
+    let q = Query::new(PART).filter(Condition::Between {
+        field: "mass".into(),
+        low: Value::Int(10),
+        high: Value::Int(20),
+    });
+    let plan = indexed_src.explain(&q).unwrap();
+    assert_eq!(
+        plan.access,
+        Access::Index {
+            index: "by_mass".into(),
+            candidates: 11
+        }
+    );
+    let expected: Vec<u64> = (10..=20).collect();
+    assert_eq!(ids(&indexed_src, &q), expected);
+    assert_eq!(ids(&scanned, &q), expected);
+}
+
+#[test]
+fn between_with_inverted_bounds_is_empty_and_does_not_panic() {
+    let mut s = indexed();
+    for i in 1..=10u64 {
+        s.insert(part(i, "Steel", i as i64));
+    }
+    let q = Query::new(PART).filter(Condition::Between {
+        field: "mass".into(),
+        low: Value::Int(8),
+        high: Value::Int(3),
+    });
+    // Validation accepts inverted bounds, so the index path runs and must return nothing.
+    assert_eq!(s.execute(&q).unwrap().count(), 0);
 }
