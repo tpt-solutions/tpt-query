@@ -298,3 +298,98 @@ let second = live.refresh(&src)?;           // added: [EntityId(200)]
 first: added [EntityId(1), EntityId(3)]
 after an insert: added [EntityId(200)], removed []
 ```
+
+## 16. Index several fields at once
+
+`create_composite_index` covers several fields, in key order. A query that tests
+equality on all of them is one lookup. The planner compares the composite with the
+single-field indexes by candidate count. A field missing from an entity keeps that
+entity out of the index.
+
+```rust
+src.create_composite_index("by_material_kind", PART, &["material", "kind"]).unwrap();
+let q = Query::new(PART).filter(Condition::all(vec![
+    Condition::eq_to("material", "Steel"),
+    Condition::eq_to("kind", "fillet"),
+]));
+```
+
+```text
+access: index `by_material_kind` (2 candidates)
+residual filters: 0
+traversals: 0
+ordered: false
+limit: none
+unindexed: none
+```
+
+A query with equality on only one of the fields does not use it.
+
+## 17. Find boxes a ray enters
+
+`Condition::Ray` matches boxes that a ray enters within `within` units. The ray is
+`origin + t * direction` for `t` from 0 to `within`. A box the ray starts inside
+counts as entered.
+
+```rust
+let q = Query::new(PART).filter(Condition::Ray {
+    field: "bbox".into(),
+    origin: [-1.0, 0.5, 0.5],
+    direction: [1.0, 0.0, 0.0],
+    within: 3.0,
+});
+```
+
+```text
+access: scan entities of type 1
+residual filters: 1
+traversals: 0
+ordered: false
+limit: none
+unindexed: ray on `bbox`
+```
+
+This plan has no index, so each entity is checked. With the `spatial` feature and an
+`RTreeIndex` on `bbox`, the planner uses the R-tree instead, and the answer is the same.
+
+## 18. Keep the nearest boxes
+
+`nearest` keeps the `k` rows whose box is closest to a point, closest first. Ties
+break by ascending id. Rows whose field is not a box are dropped. Because `k` is the
+limit, `nearest` cannot be combined with `order_by`, `limit`, `offset`, `after`, or
+`aggregate`.
+
+```rust
+let q = Query::new(PART).nearest("bbox", [0.0, 0.0, 0.0], 2);
+```
+
+```text
+access: scan entities of type 1
+residual filters: 0
+traversals: 0
+ordered: false
+limit: none
+unindexed: none
+nearest: 2
+```
+
+The selection scans the source and keeps a bounded heap, so it does not use an index.
+
+## 19. Trace a traversal row to its start
+
+Each row has `entity`, its own entity, and `source`, the entity the query started from.
+For a row with no traversal, `source` is `entity`. The source survives every
+traversal stage, so a row reached two hops away still names the start.
+
+```rust
+for row in src.execute(&q)? {
+    let row = row?;
+    println!("face {} belongs to part {}", row.id.0, row.source.id.0);
+}
+```
+
+```text
+face 100 belongs to part 1
+face 101 belongs to part 2
+face 102 belongs to part 3
+```

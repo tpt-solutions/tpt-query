@@ -4,7 +4,7 @@
 use tpt_query::advisor::suggest_indexes;
 use tpt_query::live::LiveQuery;
 use tpt_query::{
-    Condition, Edge, Entity, EntityId, EntityTypeId, IndexKind, MemorySource, Order, Query,
+    Aabb, Condition, Edge, Entity, EntityId, EntityTypeId, IndexKind, MemorySource, Order, Query,
     Queryable, Traversal, Value,
 };
 
@@ -26,7 +26,11 @@ fn main() {
             Entity::new(id, PART)
                 .with_field("material", material)
                 .with_field("mass", Value::Float(mass))
-                .with_field("kind", "fillet"),
+                .with_field("kind", "fillet")
+                .with_field(
+                    "bbox",
+                    Value::Aabb(Aabb::new([i as f64, 0.0, 0.0], [i as f64 + 1.0, 1.0, 1.0])),
+                ),
         );
         let face = EntityId(100 + i as u64);
         src.insert(Entity::new(face, FACE).with_field("area", 1.0f64));
@@ -122,4 +126,42 @@ fn main() {
         "## 15. Watch a query\nfirst: added {:?}\nafter an insert: added {:?}, removed {:?}",
         first.added, second.added, second.removed
     );
+
+    // 16. A composite index answers equality on all of its fields in one lookup.
+    // Added after the loop above, so the plans for recipes 1 to 15 do not change.
+    src.create_composite_index("by_material_kind", PART, &["material", "kind"])
+        .unwrap();
+    let steel_fillets = Query::new(PART).filter(Condition::all(vec![
+        Condition::eq_to("material", "Steel"),
+        Condition::eq_to("kind", "fillet"),
+    ]));
+    println!(
+        "## 16. Composite index\n{}\n",
+        src.explain(&steel_fillets).unwrap()
+    );
+
+    // 17. A ray hits the boxes it enters within a distance. Without the `spatial`
+    // feature this is a per-entity check. With it, an R-tree index on the field answers it.
+    let along_x = Query::new(PART).filter(Condition::Ray {
+        field: "bbox".into(),
+        origin: [-1.0, 0.5, 0.5],
+        direction: [1.0, 0.0, 0.0],
+        within: 3.0,
+    });
+    println!("## 17. Ray\n{}\n", src.explain(&along_x).unwrap());
+
+    // 18. The nearest k boxes to a point, closest first.
+    let near = Query::new(PART).nearest("bbox", [0.0, 0.0, 0.0], 2);
+    println!("## 18. Nearest\n{}\n", src.explain(&near).unwrap());
+
+    // 19. Each row names the entity the query started from, so traversal results can be
+    // traced back to their part.
+    println!("## 19. Bindings");
+    let walk = Query::new(PART).traverse(
+        Traversal::recursive(Edge::Child, Order::DepthFirst, None).filter(Condition::OfType(FACE)),
+    );
+    for row in src.execute(&walk).unwrap() {
+        let row = row.unwrap();
+        println!("face {} belongs to part {}", row.id.0, row.source.id.0);
+    }
 }

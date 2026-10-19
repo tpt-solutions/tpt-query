@@ -117,7 +117,7 @@ Source: review plan in `~/.claude/plans/review-platform-for-bugs-peaceful-anchor
 
 ### D. Adoption assets
 - [~] Examples: `doc_outline`, `json_cli`, `custom_source`, `spreadsheet_range`, and `cad_viewport` (feature `spatial`) are done and run in CI. Not done: `wasm_demo`, which needs a browser to run.
-- [x] `docs/cookbook.md`: 15 recipes with builder code and JSON. Plan output under each row recipe comes from `examples/cookbook.rs`, which CI runs
+- [x] `docs/cookbook.md`: 19 recipes with builder code and JSON. Plan output under each row recipe comes from `examples/cookbook.rs`, which CI runs
 - [x] Copy-paste JSON query templates in `templates/queries/` (four). `tests/templates.rs` parses, validates, and round-trips each one. `cargo-generate` template in `templates/cargo-generate/` (`cargo generate --path templates/cargo-generate`). Generated project builds and runs against the local crate; the dependency is `tpt-query = "0.1"` until it is published.
 - [~] README restructure: at-a-glance benchmark numbers, the index table, and the features and examples are updated. Not done: a comparison table (needs competitor numbers) and the `tpt-uir` migration note.
 - [x] Performance model: `docs/performance.md` (what streams, what materializes, planning cost). Crate-level rustdoc guide with doctests per module: not done.
