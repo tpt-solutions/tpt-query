@@ -446,6 +446,7 @@ pub trait RelationMap {
 
 /// Ids changed after some version, from [`EntitySource::changes_since`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Changes {
     /// The source's version when the list was taken.
     pub version: u64,

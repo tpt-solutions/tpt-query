@@ -17,7 +17,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen-cli matching Cargo.lock
         run: |
-          version=$(grep -A1 'name = "wasm-bindgen"$' Cargo.lock | sed -n 's/.*"\(.*\)"/\1/p')
+          version=$(awk -F'"' '/^name = "wasm-bindgen"$/ {getline; print $2; exit}' Cargo.lock)
           cargo install -f wasm-bindgen-cli --version "$version"
       - name: Run the project checks
         run: bash scripts/ci.sh

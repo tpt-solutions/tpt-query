@@ -1,0 +1,13 @@
+# cargo-deny policy. Run by .github/workflows/ci.yml.
+
+[licenses]
+# Only these licenses are accepted. Everything else fails the check.
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+confidence-threshold = 0.9
+
+[sources]
+# The only git dependency is the pinned tpt-testkit dev-dependency.
+allow-git = ["https://github.com/tpt-solutions/tpt-testkit"]

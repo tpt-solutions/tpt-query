@@ -57,6 +57,7 @@ pub struct Query {
 
 /// The nearest-`k` selection in a query. See [`Query::nearest`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Nearest {
     /// Field holding a [`Value::Aabb`].

@@ -224,7 +224,7 @@ pub struct CompositeIndex {
 impl CompositeIndex {
     /// Creates an empty index over `fields`, in key order. The caller checks that
     /// `fields` is not empty. [`crate::MemorySource::create_composite_index`] does.
-    pub fn new(name: &str, ty: EntityTypeId, fields: Vec<FieldPath>) -> Self {
+    pub(crate) fn new(name: &str, ty: EntityTypeId, fields: Vec<FieldPath>) -> Self {
         Self {
             name: String::from(name),
             ty,
