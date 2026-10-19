@@ -11,6 +11,23 @@
 //! - Results are deterministic: sources and indexes yield ids in ascending
 //!   order, and traversals follow insertion order of children.
 //!
+//! # Quick start
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//!
+//! let mut src = MemorySource::new();
+//! src.insert(Entity::new(EntityId(1), EntityTypeId(1)).with_field("material", "Steel"));
+//! src.insert(Entity::new(EntityId(2), EntityTypeId(1)).with_field("material", "Titanium"));
+//!
+//! let query = Query::new(EntityTypeId(1))
+//!     .filter(Condition::eq_to("material", "Steel"))
+//!     .project("material");
+//!
+//! let ids: Vec<u64> = src.execute(&query).unwrap().map(|row| row.unwrap().id.0).collect();
+//! assert_eq!(ids, [1]);
+//! ```
+//!
 //! # A guide to the modules
 //!
 //! - [`ast`]: the query, its conditions, and traversals. Build one with [`Query::new`].

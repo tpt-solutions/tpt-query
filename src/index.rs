@@ -1,5 +1,30 @@
 //! Secondary indexes. An index maps a field's values to entity ids and is kept in
 //! sync by [`crate::MemorySource`] on every insert, update, and delete.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//! use tpt_query::{Access, EntitySource};
+//!
+//! let mut src = MemorySource::new();
+//! src.create_index("by_mass", EntityTypeId(1), "mass", IndexKind::BTree).unwrap();
+//! for id in 1..=1000 {
+//!     src.insert(Entity::new(EntityId(id), EntityTypeId(1)).with_field("mass", id as i64));
+//! }
+//!
+//! // A range on an indexed field reads only the matching candidates.
+//! let query = Query::new(EntityTypeId(1))
+//!     .filter(Condition::gte("mass", 10))
+//!     .filter(Condition::lte("mass", 12));
+//! let plan = src.explain(&query).unwrap();
+//! assert!(matches!(plan.access, Access::Index { ref index, .. } if index == "by_mass"));
+//! assert_eq!(src.execute(&query).unwrap().count(), 3);
+//! ```
+//!
+//! A [`IndexKind::Hash`] index answers equality only. A [`IndexKind::BTree`] index also
+//! answers `Gt`, `Gte`, `Lt`, and `Lte`. `Between` is checked as a filter and does not use
+//! the index, so write a range as `Gte` plus `Lte` to get the index.
 
 use alloc::{
     boxed::Box,

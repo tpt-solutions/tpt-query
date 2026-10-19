@@ -1,5 +1,16 @@
 //! JSON form of the query AST and of result rows (feature `json`), for
 //! cross-language clients.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::json::{query_from_json, query_to_json};
+//!
+//! let input = r#"{"source":1,"filters":[{"Eq":{"field":"material","value":"Steel"}}]}"#;
+//! let query = query_from_json(input).unwrap();
+//! let text = query_to_json(&query).unwrap();
+//! assert_eq!(query_from_json(&text).unwrap(), query);
+//! ```
 
 use alloc::{
     string::{String, ToString},

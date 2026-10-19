@@ -1,4 +1,24 @@
 //! Graph navigation: a lazy walker over one relationship, with cycle detection.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//! use tpt_query::traverse::Walker;
+//!
+//! let mut src = MemorySource::new();
+//! for id in 1..=4 {
+//!     src.insert(Entity::new(EntityId(id), EntityTypeId(1)));
+//! }
+//! src.link_child(EntityId(1), EntityId(2));
+//! src.link_child(EntityId(2), EntityId(3));
+//! src.link_child(EntityId(1), EntityId(4));
+//!
+//! // Pre-order, children in insertion order. The start is never yielded.
+//! let walk: Vec<EntityId> =
+//!     Walker::new(&src, EntityId(1), &Edge::Child, Order::DepthFirst, None, None).collect();
+//! assert_eq!(walk, [EntityId(2), EntityId(3), EntityId(4)]);
+//! ```
 
 use alloc::{
     boxed::Box,

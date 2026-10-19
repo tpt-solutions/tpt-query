@@ -1,5 +1,21 @@
 //! The query representation: a typed Rust builder whose shape also serves as the
 //! JSON AST (with the `serde` feature).
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//!
+//! // Faces of heavy steel parts, largest face first.
+//! let query = Query::new(EntityTypeId(1))
+//!     .filter(Condition::eq_to("material", "Steel"))
+//!     .filter(Condition::gt("mass", 2.5))
+//!     .traverse(Traversal::step(Edge::Child).filter(Condition::OfType(EntityTypeId(2))))
+//!     .project("area")
+//!     .order_by("area", true)
+//!     .limit(5);
+//! assert!(query.validate().is_ok());
+//! ```
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 

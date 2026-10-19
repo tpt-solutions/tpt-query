@@ -1,5 +1,25 @@
 //! Local stub of the entity data model (ids, values, fields, relations) and the
 //! in-memory reference source. Swap for `tpt-uir` / `tpt-model` once they exist.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//! use tpt_query::{EntitySource, RelationMap};
+//!
+//! let mut src = MemorySource::new();
+//! src.insert(Entity::new(EntityId(1), EntityTypeId(1)).with_field("name", "Bracket"));
+//! src.insert(Entity::new(EntityId(2), EntityTypeId(2)).with_field("area", 4.5));
+//! assert!(src.link_child(EntityId(1), EntityId(2)));
+//!
+//! let bracket = src.get(EntityId(1)).unwrap();
+//! assert_eq!(bracket.field(&FieldPath::parse("name")), Some(&Value::from("Bracket")));
+//! assert_eq!(src.children(EntityId(1)), &[EntityId(2)]);
+//! assert_eq!(src.parent(EntityId(2)), Some(EntityId(1)));
+//! ```
+//!
+//! A dot inside a field name is escaped with a backslash. `FieldPath::parse(r"a\.b")` is the
+//! single segment `a.b`, while `FieldPath::parse("a.b")` is `a` then `b`.
 
 use alloc::{
     boxed::Box,

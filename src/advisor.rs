@@ -5,6 +5,24 @@
 //! equality. A field that only appears in equality or membership gets a hash index,
 //! and a box field gets an R-tree. The advisor does not know what already exists, so
 //! the caller drops suggestions it has already built.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::advisor::{SuggestedKind, suggest_indexes};
+//! use tpt_query::prelude::*;
+//!
+//! let workload = [
+//!     Query::new(EntityTypeId(1)).filter(Condition::eq_to("material", "Steel")),
+//!     Query::new(EntityTypeId(1)).filter(Condition::gt("mass", 1.0)),
+//! ];
+//! let suggestions = suggest_indexes(&workload);
+//!
+//! let mass = suggestions.iter().find(|s| s.field == FieldPath::parse("mass")).unwrap();
+//! assert!(matches!(mass.kind, SuggestedKind::BTree));
+//! let material = suggestions.iter().find(|s| s.field == FieldPath::parse("material")).unwrap();
+//! assert!(matches!(material.kind, SuggestedKind::Hash));
+//! ```
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},

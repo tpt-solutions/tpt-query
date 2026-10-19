@@ -3,6 +3,32 @@
 //! An arena-allocated R-tree with a linear-cost split. Removals do not condense
 //! underfull nodes, so heavy churn can leave the tree less tight than a fresh bulk
 //! load. Results are always exact.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//! use tpt_query::spatial::RTreeIndex;
+//! use tpt_query::{Access, Aabb, EntitySource};
+//!
+//! let mut src = MemorySource::new();
+//! src.add_index(Box::new(RTreeIndex::new("by_bounds", EntityTypeId(1), "bounds"))).unwrap();
+//! src.insert(
+//!     Entity::new(EntityId(1), EntityTypeId(1))
+//!         .with_field("bounds", Value::Aabb(Aabb::new([0.0; 3], [1.0; 3]))),
+//! );
+//! src.insert(
+//!     Entity::new(EntityId(2), EntityTypeId(1))
+//!         .with_field("bounds", Value::Aabb(Aabb::new([5.0; 3], [6.0; 3]))),
+//! );
+//!
+//! let query = Query::new(EntityTypeId(1))
+//!     .filter(Condition::intersects("bounds", Aabb::new([0.5; 3], [2.0; 3])));
+//! let plan = src.explain(&query).unwrap();
+//! assert!(matches!(plan.access, Access::Index { ref index, .. } if index == "by_bounds"));
+//! let ids: Vec<EntityId> = src.execute(&query).unwrap().map(|row| row.unwrap().id).collect();
+//! assert_eq!(ids, [EntityId(1)]);
+//! ```
 
 use alloc::{boxed::Box, vec, vec::Vec};
 

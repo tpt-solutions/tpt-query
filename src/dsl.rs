@@ -29,6 +29,16 @@
 //!
 //! Field names are plain words (`material.grade`) or quoted strings (`"my field"`).
 //! Escapes in field paths follow [`FieldPath`].
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::dsl;
+//!
+//! let query = dsl::parse("from 1 where mass > 1.0 order by mass desc limit 5").unwrap();
+//! let text = query.to_string();
+//! assert_eq!(dsl::parse(&text).unwrap(), query);
+//! ```
 
 use alloc::{
     format,

@@ -7,6 +7,22 @@
 //!
 //! Traversal stages and `Related` conditions reach other types, so their fields are
 //! not checked here.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//! use tpt_query::schema::{FieldKind, Schema};
+//!
+//! let schema = Schema::new()
+//!     .entity_type(EntityTypeId(1))
+//!     .field(EntityTypeId(1), "mass", FieldKind::Float);
+//!
+//! let float_query = Query::new(EntityTypeId(1)).filter(Condition::gt("mass", 1.0));
+//! let int_query = Query::new(EntityTypeId(1)).filter(Condition::gt("mass", 1));
+//! assert!(schema.validate_against(&float_query).is_ok());
+//! assert!(schema.validate_against(&int_query).is_err());
+//! ```
 
 use alloc::{
     collections::BTreeMap,

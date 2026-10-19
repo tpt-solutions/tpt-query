@@ -28,6 +28,8 @@ All notable changes to this project are recorded here. The format follows
 - `json::execute_json` and `json::rows_to_json`, which return rows as a JSON array.
 - `Metric` is serializable (feature `serde`).
 - `prelude` module, and the `docs/cookbook.md` recipes.
+- Rustdoc quick start and a runnable example for the crate and each module, run by
+  `cargo test --doc`.
 - Examples `doc_outline` and `json_cli`, both run by `scripts/ci.sh`.
 - Aggregation in the query: `Query::aggregate` and `Queryable::aggregate`, grouped or
   ungrouped. `json::aggregate_json` returns `[{"key", "value"}]`.

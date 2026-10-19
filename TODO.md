@@ -72,6 +72,7 @@ Deviations from the decisions above (see notes on each item):
 
 ## Later / follow-ups
 - [ ] Replace stub layer with real `tpt-uir` / `tpt-model`. Blocked: `cargo info tpt-uir` (crates.io index, 2026-10-19) reports the crate is not found. Decision: 1.0 does not wait for it. The stub trait stays until the crate exists and its API is checked against `EntitySource`.
+- [ ] Index-accelerate `Condition::Between`. The planner and `ValueIndex::lookup` handle only `Eq` and one-sided ranges, so `Between` is always a filter. The advisor already suggests a B-tree for `Between` fields.
 - [ ] Integration examples for tpt-vertex, tpt-doc, tpt-lattice
 - [ ] Optional Datalog text syntax (currently out of scope)
 
@@ -120,7 +121,7 @@ Source: review plan in `~/.claude/plans/review-platform-for-bugs-peaceful-anchor
 - [x] `docs/cookbook.md`: 19 recipes with builder code and JSON. Plan output under each row recipe comes from `examples/cookbook.rs`, which CI runs
 - [x] Copy-paste JSON query templates in `templates/queries/` (four). `tests/templates.rs` parses, validates, and round-trips each one. `cargo-generate` template in `templates/cargo-generate/` (`cargo generate --path templates/cargo-generate`). Generated project builds and runs against the local crate; the dependency is `tpt-query = "0.1"` until it is published.
 - [~] README restructure: at-a-glance benchmark numbers, the index table, and the features and examples are updated. Decided: no competitor table yet. A fair comparison needs the same data and machine for every library, and recorded versions. Deferred until someone names the comparison set. The `tpt-uir` migration note waits on the crate (see Later / follow-ups).
-- [x] Performance model: `docs/performance.md` (what streams, what materializes, planning cost). Crate-level rustdoc guide with doctests per module: not done.
+- [x] Performance model: `docs/performance.md` (what streams, what materializes, planning cost). Crate-level rustdoc guide with doctests per module: done. `src/lib.rs` has a quick start and a module guide, and each module has a runnable example. `cargo test --doc` passes under all, spatial-only, and no features. Found while writing them: `Condition::Between` is not index-accelerated (see Later / follow-ups), so the index example uses `Gte` plus `Lte`.
 - [x] `tpt-query` CLI: a binary behind feature `cli`. Decided: an in-crate binary, not a separate crate. Loads entities from JSON, runs DSL or JSON queries, and prints rows, the plan, or the analysis.
 - [ ] `tpt-query-uir` adapter crate once `tpt-uir` exists
 
@@ -132,7 +133,7 @@ Source: review plan in `~/.claude/plans/review-platform-for-bugs-peaceful-anchor
 - [~] Snapshot read view: `MemorySource::snapshot` returns a `Snapshot`. It copies every entity (O(N)) and has no indexes. Versioned storage is not done. Decided: out of scope for 1.0. Copy-on-snapshot is simple and nothing needs more yet.
 - [-] Result diff helper for golden tests. Closed: `tpt_testkit::golden` already renders a unified diff on mismatch, so no helper is added here.
 - [~] k-NN and ray queries. Done: `Condition::Ray` (a predicate; routed through the R-tree with `spatial`, so it is index-exact) and `Query::nearest` (the k nearest boxes, ties by id, rejected with order_by, limit, offset, after, or aggregate). Not done: routing `nearest` through the R-tree. The filters make a top-k from the index inexact, so it needs a design for that. The plan shows `nearest: k` and a scan. Decided: keep it a scan until a workload shows it is slow.
-- [~] Fuzz targets: `query_from_json` has proptest robustness tests (`tests/json_robustness.rs`: arbitrary, truncated, and mutated input, plus round trips). A cargo-fuzz target is in `fuzz/` (`query_from_json`: parse, then validate and round-trip anything accepted). It compiles, but it has not been run: that needs nightly and `cargo-fuzz`, which this machine does not have. The random AST vs brute-force oracle is done (`tests/ast_oracle.rs`): nested And/Or/Not over indexed and scanned fields.
+- [~] Fuzz targets: `query_from_json` has proptest robustness tests (`tests/json_robustness.rs`: arbitrary, truncated, and mutated input, plus round trips). A cargo-fuzz target is in `fuzz/` (`query_from_json`: parse, then validate and round-trip anything accepted). Run here for 122 s (`cargo +nightly fuzz run query_from_json`, cargo-fuzz 0.13.2, AddressSanitizer): 2,190,301 runs, no crashes or artifacts. On Windows the ASan DLL must be on PATH (`clang_rt.asan_dynamic-x86_64.dll`, in the VS BuildTools `VC/Tools/MSVC/<ver>/bin/Hostx64/x64` folder). Longer runs are not done. The random AST vs brute-force oracle is done (`tests/ast_oracle.rs`): nested And/Or/Not over indexed and scanned fields.
 
 ## 1.0 review (2026-10-19)
 - [x] API review of the new public surface. `Nearest` and `Changes` are `#[non_exhaustive]`, so fields can be added later. `CompositeIndex::new` is crate-private: `MemorySource::create_composite_index` is the checked way in. The earlier additions (`Row::source`, `Plan::nearest`, `Analysis` timings) are on non-exhaustive types.

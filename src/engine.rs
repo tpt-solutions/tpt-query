@@ -3,6 +3,32 @@
 //! Pipeline: scan or index candidates -> residual filters -> traversal stages ->
 //! optional sort -> projection -> limit. Scans and traversals are lazy, so a
 //! `limit` stops work early.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//!
+//! let mut src = MemorySource::new();
+//! for id in 1..=3 {
+//!     src.insert(Entity::new(EntityId(id), EntityTypeId(1)).with_field("mass", id as i64));
+//! }
+//! let query = Query::new(EntityTypeId(1))
+//!     .filter(Condition::gte("mass", 2))
+//!     .limit(1);
+//!
+//! // `explain` plans the query without running it.
+//! let plan = src.explain(&query).unwrap();
+//! assert_eq!(plan.limit, Some(1));
+//!
+//! for row in src.execute(&query).unwrap() {
+//!     assert_eq!(row.unwrap().id, EntityId(2));
+//! }
+//!
+//! // `analyze` runs the query and counts the rows that reached each stage.
+//! let analysis = src.analyze(&query).unwrap();
+//! assert_eq!(analysis.returned, 1);
+//! ```
 
 use alloc::{
     boxed::Box,

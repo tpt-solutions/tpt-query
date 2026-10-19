@@ -5,6 +5,24 @@
 //! relation conditions, no ordering, paging, distinct, or nearest selection), a refresh
 //! re-checks just the entities that changed. Otherwise it re-runs the whole query and
 //! diffs the ids. [`MemorySource`](crate::MemorySource) keeps a change feed.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::live::LiveQuery;
+//! use tpt_query::prelude::*;
+//!
+//! let mut src = MemorySource::new();
+//! src.insert(Entity::new(EntityId(1), EntityTypeId(1)).with_field("mass", 3.0));
+//! let mut live = LiveQuery::new(Query::new(EntityTypeId(1)).filter(Condition::gt("mass", 2.0)));
+//!
+//! let first = live.refresh(&src).unwrap();
+//! assert_eq!(first.added, [EntityId(1)]);
+//!
+//! src.remove(EntityId(1));
+//! let second = live.refresh(&src).unwrap();
+//! assert_eq!(second.removed, [EntityId(1)]);
+//! ```
 
 use alloc::{collections::BTreeSet, vec::Vec};
 

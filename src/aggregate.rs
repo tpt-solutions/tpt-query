@@ -1,5 +1,30 @@
 //! Streaming reductions over query rows. Memory is O(1) for [`aggregate`] and
 //! O(K) for [`group_by`], where K is the number of groups.
+//!
+//! # Example
+//!
+//! ```
+//! use tpt_query::prelude::*;
+//!
+//! let mut src = MemorySource::new();
+//! for (id, material, mass) in [(1, "Steel", 2.0), (2, "Steel", 3.0), (3, "Titanium", 4.0)] {
+//!     src.insert(
+//!         Entity::new(EntityId(id), EntityTypeId(1))
+//!             .with_field("material", material)
+//!             .with_field("mass", mass),
+//!     );
+//! }
+//!
+//! // One (key, value) pair per group, sorted by key.
+//! let query = Query::new(EntityTypeId(1)).aggregate(
+//!     Metric::Sum(FieldPath::parse("mass")),
+//!     Some(FieldPath::parse("material")),
+//! );
+//! assert_eq!(
+//!     src.aggregate(&query).unwrap(),
+//!     [(Value::from("Steel"), Value::Float(5.0)), (Value::from("Titanium"), Value::Float(4.0))]
+//! );
+//! ```
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
